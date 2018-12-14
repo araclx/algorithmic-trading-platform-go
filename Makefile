@@ -1,11 +1,12 @@
 TAG				= test-latest
 ORGANIZATION	= rektranetwork
 PRODUCT			= trekt
+REPO 			= 
 GO_VER			= 1.11.2
 NODE_OS_NAME	= alpine
 NODE_OS_TAG		= 3.8
 
-IMAGE_TAG_ACCESSPOINT = $(ORGANIZATION)/$(PRODUCT)/accesspoint:$(TAG)
+IMAGE_TAG_ACCESSPOINT = $(ORGANIZATION)/$(PRODUCT).accesspoint:$(TAG)
 
 .DEFAULT_GOAL := help
 
@@ -21,5 +22,8 @@ build: ## Build docker images from actual local sources.
 		--file "$(CURDIR)/cmd/scrtr-accesspoint/Dockerfile" \
 		--tag $(IMAGE_TAG_ACCESSPOINT) \
 		./
+
+release: ## Push images on the hub.
+	docker push $(IMAGE_TAG_ACCESSPOINT)
 
 .PHONY: build
