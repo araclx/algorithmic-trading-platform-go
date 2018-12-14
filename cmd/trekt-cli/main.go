@@ -86,7 +86,7 @@ func (client *client) run() {
 			err = json.Unmarshal(data, &messages)
 			if err != nil {
 				log.Printf(
-					`Failed to parase data from the connection: "%s".`, err)
+					`Failed to parse data from the connection: "%s".`, err)
 				return
 			}
 			go client.handleServerMessage(messages)
