@@ -30,7 +30,7 @@ var (
 func main() {
 	flag.Parse()
 
-	mq := mqclient.DealOrExit(*mqBroker, "accesspoint", *name)
+	mq := mqclient.DealOrExit(*mqBroker, "scrtr-accesspoint", *name)
 	defer mq.Close()
 
 	upgrader := websocket.Upgrader{}
