@@ -14,7 +14,7 @@ import (
 ///////////////////////////////////////////////////////////////////////////////
 
 // DealOrExit creates a new client connection with message broker, or exit
-// with error printing if creating is faild.
+// with error printing if creating is failed.
 func DealOrExit(broker, nodeType, nodeName string) *Client {
 	result, err := Dial(broker, nodeType, nodeName)
 	if err != nil {
@@ -56,7 +56,7 @@ func Dial(broker, nodeType, nodeName string) (*Client, error) {
 	result.directQueue, err = result.directChannel.QueueDeclare(
 		"direct."+result.id,
 		false, // durable
-		true,  // delete when usused
+		true,  // delete when unused
 		true,  // exclusive
 		false, // no-wait
 		nil,   // arguments
@@ -102,12 +102,12 @@ func (client *Client) Close() {
 	}
 }
 
-// LogErrorf formats and sends serror message in the queue and prints to the standard logger.
+// LogErrorf formats and sends error message in the queue and prints to the standard logger.
 func (client *Client) LogErrorf(format string, args ...interface{}) {
 	client.publishLogRecordf("error", format, args...)
 }
 
-// LogError sends serror message in the queue and prints to the standard logger.
+// LogError sends error message in the queue and prints to the standard logger.
 func (client *Client) LogError(message string) {
 	client.publishLogRecord("error", message)
 }
@@ -142,7 +142,7 @@ func (client *Client) LogDebug(message string) {
 	client.publishLogRecord("debug", message)
 }
 
-// Subscribe creates subscribtion.
+// Subscribe creates subscription.
 func (client *Client) Subscribe(
 	exchange *Exchange,
 	request string) (*Subscription, error) {
@@ -153,7 +153,7 @@ func (client *Client) Subscribe(
 	queue, err := exchange.channel.QueueDeclare(
 		"",    // name
 		false, // durable
-		true,  // delete when usused
+		true,  // delete when unused
 		true,  // exclusive
 		false, // no-wait
 		nil,   // arguments
