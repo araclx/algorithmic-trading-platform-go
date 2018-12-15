@@ -18,11 +18,12 @@ import (
 )
 
 var (
-	mqBroker  = flag.String("mq_broker", "localhost", "message queuing broker")
-	name      = flag.String("name", "", "node instance name")
-	host      = flag.String("host", "*:443", "server host and port")
-	isSecured = flag.Bool("secured", true, "use SSL instead plain")
-	endpoint  = flag.String("endpoint", "/", "endpoint request path")
+	mqBroker    = flag.String("mq_broker", "localhost", "message queuing broker")
+	name        = flag.String("name", "", "node instance name")
+	host        = flag.String("host", "*:8443", "server host and port")
+	isUnsecured = flag.Bool("unsecured", false,
+		"do not use secure connections for client connection")
+	endpoint = flag.String("endpoint", "/", "endpoint request path")
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -77,7 +78,7 @@ func main() {
 
 	mq.LogDebugf(`Opening server at "%s%s"...`, *host, *endpoint)
 	var listener net.Listener
-	if *isSecured {
+	if !*isUnsecured {
 		listener = autocert.NewListener(*host)
 	} else {
 		var err error
@@ -90,7 +91,7 @@ func main() {
 	defer listener.Close()
 	{
 		secureType := "Secured"
-		if !*isSecured {
+		if *isUnsecured {
 			secureType = "Unsecured"
 		}
 		mq.LogDebugf(`%s server opened at "%s".`,
