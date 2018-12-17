@@ -1,29 +1,59 @@
-TAG				= test-latest
-ORGANIZATION	= rektranetwork
-PRODUCT			= trekt
-REPO 			= 
-GO_VER			= 1.11.2
-NODE_OS_NAME	= alpine
-NODE_OS_TAG		= 3.8
+# Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+
+TAG = test-latest
+ORGANIZATION = rektranetwork
+PRODUCT = trekt
+GO_VER = 1.11.2
+NODE_OS_NAME = alpine
+NODE_OS_TAG = 3.8
 
 IMAGE_TAG_ACCESSPOINT = $(ORGANIZATION)/$(PRODUCT).accesspoint:$(TAG)
+IMAGE_TAG_AUTH = $(ORGANIZATION)/$(PRODUCT).auth:$(TAG)
+
+THIS_FILE := $(lastword $(MAKEFILE_LIST))
 
 .DEFAULT_GOAL := help
 
-help: ## Show this help.
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
-
-build: ## Build docker images from actual local sources. 
-	@docker build \
+define build_docker_cmd_image
+	docker build \
 		--rm \
 		--build-arg GO_VER=$(GO_VER) \
 		--build-arg NODE_OS_NAME=$(NODE_OS_NAME) \
 		--build-arg NODE_OS_TAG=$(NODE_OS_TAG) \
-		--file "$(CURDIR)/cmd/scrtr-accesspoint/Dockerfile" \
-		--tag $(IMAGE_TAG_ACCESSPOINT) \
+		--file "$(CURDIR)/cmd/$(1)/Dockerfile" \
+		--tag $(2) \
 		./
+endef
 
-release: ## Push images on the hub.
-	docker push $(IMAGE_TAG_ACCESSPOINT)
+define push_docker_cmd_image
+	docker push $(1)
+endef
 
-.PHONY: build
+define make_target
+	$(MAKE) -f $(THIS_FILE) $(1)
+endef
+
+.PHONY: help build build-accesspoint build-auth	release release-accesspoint release-auth
+
+help: ## Show this help.
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+build-accesspoint: ## Build access point node docker images from actual local sources. 
+	@$(call build_docker_cmd_image,scrtr-accesspoint,$(IMAGE_TAG_ACCESSPOINT))
+
+build-auth: ## Build auth-node docker images from actual local sources. 
+	@$(call build_docker_cmd_image,trekt-auth,$(IMAGE_TAG_AUTH))
+
+build: ## Build docker images from actual local sources for all commands. 
+	$(call make_target,build-accesspoint)
+	$(call make_target,build-auth)
+
+release-accesspoint: ## Push access point node images on the hub.
+	@$(call push_docker_cmd_image,$(IMAGE_TAG_ACCESSPOINT))
+
+release-auth: ## Push auth-node image on the hub.
+	@$(call push_docker_cmd_image,$(IMAGE_TAG_AUTH))
+
+release: ## Push all images on the hub.
+	@$(call make_target,release-accesspoint)
+	@$(call make_target,release-auth)
