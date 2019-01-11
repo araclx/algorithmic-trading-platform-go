@@ -9,6 +9,7 @@ NODE_OS_TAG = 3.8
 
 IMAGE_TAG_ACCESSPOINT = $(ORGANIZATION)/$(PRODUCT).accesspoint:$(TAG)
 IMAGE_TAG_AUTH = $(ORGANIZATION)/$(PRODUCT).auth:$(TAG)
+IMAGE_TAG_EXCHANGE_BINANCE = $(ORGANIZATION)/$(PRODUCT).exchange.binance:$(TAG)
 
 THIS_FILE := $(lastword $(MAKEFILE_LIST))
 
@@ -33,27 +34,39 @@ define make_target
 	$(MAKE) -f $(THIS_FILE) $(1)
 endef
 
+
 .PHONY: help build build-accesspoint build-auth	release release-accesspoint release-auth
+
 
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-build-accesspoint: ## Build access point node docker images from actual local sources. 
+
+build-accesspoint: ## Build access point node docker image from actual local sources.
 	@$(call build_docker_cmd_image,scrtr-accesspoint,$(IMAGE_TAG_ACCESSPOINT))
 
-build-auth: ## Build auth-node docker images from actual local sources. 
+build-auth: ## Build auth-node docker image from actual local sources.
 	@$(call build_docker_cmd_image,trekt-auth,$(IMAGE_TAG_AUTH))
 
-build: ## Build docker images from actual local sources for all commands. 
+build-binance: ## Build Binance connector docker image from actual local sources.
+	@$(call build_docker_cmd_image,trekt-exchange-binance,$(IMAGE_TAG_EXCHANGE_BINANCE))
+
+build: ## Build all docker images from actual local sources.
 	$(call make_target,build-accesspoint)
 	$(call make_target,build-auth)
+	$(call make_target,build-binance)
 
-release-accesspoint: ## Push access point node images on the hub.
+
+release-accesspoint: ## Push access point node image to the hub.
 	@$(call push_docker_cmd_image,$(IMAGE_TAG_ACCESSPOINT))
 
-release-auth: ## Push auth-node image on the hub.
+release-auth: ## Push auth-node image to the hub.
 	@$(call push_docker_cmd_image,$(IMAGE_TAG_AUTH))
+
+release-binance: ## Push Binance exchange connector image to the hub.
+	@$(call push_docker_cmd_image,$(IMAGE_TAG_EXCHANGE_BINANCE))
 
 release: ## Push all images on the hub.
 	@$(call make_target,release-accesspoint)
 	@$(call make_target,release-auth)
+	@$(call make_target,release-binance)
