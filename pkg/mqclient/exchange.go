@@ -1,4 +1,4 @@
-// Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+// Copyright 2018 REKTRA Network, All Rights Reserved.
 
 package mqclient
 
@@ -25,6 +25,7 @@ type exchange struct {
 func (exchange *exchange) init(
 	name, kind string,
 	conn *amqp.Connection,
+	capacity uint16,
 	reportError func(string)) error {
 	exchange.name = name
 
@@ -34,7 +35,7 @@ func (exchange *exchange) init(
 		return err
 	}
 	exchange.returnChan = exchange.channel.NotifyReturn(
-		make(chan amqp.Return, 100))
+		make(chan amqp.Return, 1))
 
 	err = exchange.channel.ExchangeDeclare(
 		exchange.name,
@@ -54,7 +55,7 @@ func (exchange *exchange) init(
 		request        amqp.Publishing
 		handleResponse func(amqp.Delivery)
 		handleError    func(error)
-	})
+	}, capacity)
 	exchange.responseChan = make(chan amqp.Delivery)
 
 	exchange.reportError = reportError
@@ -72,6 +73,13 @@ func (exchange *exchange) close() {
 		close(exchange.handlersChan)
 	}
 	closeChannel(&exchange.channel)
+}
+
+func (exchange *exchange) publish(
+	key string, mandatory, immediate bool, message amqp.Publishing) error {
+
+	return exchange.channel.Publish(
+		exchange.name, key, mandatory, immediate, message)
 }
 
 func (exchange *exchange) runReturnsReading() {
@@ -93,16 +101,16 @@ loop:
 			if !hasHandler {
 				if notification.Exchange == exchange.name {
 					exchange.reportError(
-						fmt.Sprintf(`Failed to request RPC: "%s" (code: %d)`,
-							notification.ReplyText, notification.ReplyCode))
+						fmt.Sprintf(
+							`Failed to request RPC on exchange "%s": "%s" (code: %d)`,
+							exchange.name, notification.ReplyText, notification.ReplyCode))
 				}
 				break
 			}
 			delete(handlers, notification.CorrelationId)
-			err := fmt.Errorf(`Failed to request RPC: "%s" (code: %d)`,
-				notification.ReplyText, notification.ReplyCode)
-			exchange.reportError(err.Error())
-			go handler.handleError(err)
+			go handler.handleError(fmt.Errorf(
+				`Failed to request RPC on exchange "%s": "%s" (code: %d)`,
+				notification.Exchange, notification.ReplyText, notification.ReplyCode))
 
 		case response, isOpened := <-exchange.responseChan:
 			if !isOpened {

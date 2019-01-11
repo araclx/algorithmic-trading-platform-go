@@ -12,10 +12,10 @@ import (
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// DealOrExit creates a new client connection with message broker, or exit
+// DealOrExit creates a new client connection with message broker or exits
 // with error printing if creating is failed.
-func DealOrExit(broker, nodeType, nodeName string) *Client {
-	result, err := Dial(broker, nodeType, nodeName)
+func DealOrExit(broker, nodeType, nodeName string, capacity uint16) *Client {
+	result, err := Dial(broker, nodeType, nodeName, capacity)
 	if err != nil {
 		log.Fatalf(`Failed to connect to MQ broker "%s": "%s".`, broker, err)
 	}
@@ -23,7 +23,9 @@ func DealOrExit(broker, nodeType, nodeName string) *Client {
 }
 
 // Dial creates a new client connection with message broker.
-func Dial(broker, nodeType, nodeName string) (*Client, error) {
+func Dial(
+	broker, nodeType, nodeName string, capacity uint16) (*Client, error) {
+
 	if nodeType == "" {
 		return nil, errors.New("Node type is empty")
 	}
@@ -41,6 +43,8 @@ func Dial(broker, nodeType, nodeName string) (*Client, error) {
 
 	result := &Client{
 		conn: conn,
+		Type: nodeType,
+		name: nodeName,
 		id:   nodeType + "." + nodeName,
 	}
 	checkResult := func() (*Client, error) {
@@ -68,12 +72,17 @@ func Dial(broker, nodeType, nodeName string) (*Client, error) {
 		return checkResult()
 	}
 
-	result.Log, err = createLogExchange(conn)
+	result.Log, err = createLogExchange(conn, capacity)
 	if err != nil {
 		return checkResult()
 	}
 
-	result.LogDebugf(`Connected to the message queuing broker "%s".`,
-		fmt.Sprintf(url, login, "*****"))
+	capacityStatus := ""
+	if capacity != 1 {
+		capacityStatus = fmt.Sprintf(" with capacity %d", capacity)
+	}
+
+	result.LogDebugf(`Connected to the message queuing broker "%s"%s.`,
+		fmt.Sprintf(url, login, "*****"), capacityStatus)
 	return result, nil
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+// Copyright 2018 REKTRA Network, All Rights Reserved.
 
 package mqclient
 
@@ -8,7 +8,9 @@ import (
 	"github.com/streadway/amqp"
 )
 
-type messageSubscription struct {
+///////////////////////////////////////////////////////////////////////////////
+
+type subscription struct {
 	exchange    *exchange
 	consumerTag string
 	reportError func(string)
@@ -16,8 +18,22 @@ type messageSubscription struct {
 	messageChan <-chan amqp.Delivery
 }
 
-func (subscription *messageSubscription) init(
-	request string,
+func createSubscription(
+	query string,
+	exchange *exchange,
+	isAutoAck bool,
+	reportError func(string)) (*subscription, error) {
+
+	result := &subscription{}
+	err := result.init(query, exchange, isAutoAck, reportError)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (subscription *subscription) init(
+	query string,
 	exchange *exchange,
 	isAutoAck bool,
 	reportError func(string)) error {
@@ -37,12 +53,13 @@ func (subscription *messageSubscription) init(
 	if err != nil {
 		return nil
 	}
-	if request == "" {
-		request = subscription.queue.Name
+
+	if query == "" {
+		query = subscription.queue.Name
 	}
 
 	err = subscription.exchange.channel.QueueBind(
-		subscription.queue.Name, request, exchange.name, false, nil)
+		subscription.queue.Name, query, exchange.name, false, nil)
 	if err != nil {
 		subscription.close()
 		return err
@@ -66,7 +83,7 @@ func (subscription *messageSubscription) init(
 	return nil
 }
 
-func (subscription *messageSubscription) close() {
+func (subscription *subscription) close() {
 	if subscription.messageChan != nil {
 		err := subscription.exchange.channel.Cancel(subscription.consumerTag, false)
 		if err != nil {
@@ -74,6 +91,7 @@ func (subscription *messageSubscription) close() {
 				`Failed to cancel consumer subscription "%s": "%s"`,
 				subscription.consumerTag, err))
 		}
+		subscription.messageChan = nil
 	}
 
 	numberOfTasks, err := subscription.exchange.channel.QueueDelete(
@@ -90,7 +108,7 @@ func (subscription *messageSubscription) close() {
 	}
 }
 
-func (subscription *messageSubscription) handle(handle func(amqp.Delivery)) {
+func (subscription *subscription) handle(handle func(amqp.Delivery)) {
 	for {
 		message, isOpened := <-subscription.messageChan
 		if !isOpened {
@@ -99,3 +117,37 @@ func (subscription *messageSubscription) handle(handle func(amqp.Delivery)) {
 		handle(message)
 	}
 }
+
+///////////////////////////////////////////////////////////////////////////////
+
+type clientSubscription struct {
+	subscription
+	client *Client
+}
+
+func createClientSubscription(
+	query string,
+	exchange *exchange,
+	isAutoAck bool,
+	client *Client) (*clientSubscription, error) {
+
+	result := &clientSubscription{}
+	err := result.init(query, exchange, isAutoAck, client)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (subscription *clientSubscription) init(query string,
+	exchange *exchange,
+	isAutoAck bool,
+	client *Client) error {
+
+	subscription.client = client
+	return subscription.subscription.init(
+		query, exchange, isAutoAck,
+		func(message string) { subscription.client.LogError(message + ".") })
+}
+
+///////////////////////////////////////////////////////////////////////////////

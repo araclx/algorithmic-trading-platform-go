@@ -1,8 +1,9 @@
-// Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+// Copyright 2018 REKTRA Network, All Rights Reserved.
 
 package mqclient
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -13,169 +14,158 @@ import (
 ///////////////////////////////////////////////////////////////////////////////
 
 type rpc struct {
-	exchange *exchange
-	queue    amqp.Queue
+	exchange     *exchange
+	client       *Client
+	subscription clientSubscription
 }
 
-func (rpc *rpc) init(name string, exchange *exchange) error {
+func (rpc *rpc) init(query string, exchange *exchange, client *Client) error {
 	rpc.exchange = exchange
-
-	var err error
-	rpc.queue, err = rpc.exchange.channel.QueueDeclare(
-		name,  // name
-		false, // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
-	)
-
-	return err
+	rpc.client = client
+	return rpc.subscription.init(
+		query,
+		rpc.exchange,
+		true, // is auto-ack
+		client)
 }
 
-func (rpc *rpc) close() {}
+func (rpc *rpc) close() {
+	rpc.subscription.close()
+}
+
+func (rpc *rpc) getReplyName() string {
+	return rpc.subscription.queue.Name
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 
-type rpcServer struct {
-	rpc
-	client       *Client
-	subscription messageSubscription
-}
+type rpcServer struct{ rpc }
 
-func (server *rpcServer) init(name string, exchange *exchange, client *Client) error {
-	err := server.rpc.init(name, exchange)
-	if err != nil {
-		return err
-	}
+func (server *rpcServer) init(
+	subscriptionQuery string, exchange *exchange, client *Client) error {
 
-	server.client = client
-
-	err = server.subscription.init(
-		server.queue.Name, server.exchange, true,
-		func(message string) { server.client.LogError(message + ".") })
-	if err != nil {
-		server.rpc.close()
-		return err
-	}
-
-	return nil
+	return server.rpc.init(subscriptionQuery, exchange, client)
 }
 
 func (server *rpcServer) close() {
-	server.subscription.close()
 	server.rpc.close()
 }
 
 func (server *rpcServer) handle(
-	handle func([]byte) (response []byte, err error)) {
+	handle func(amqp.Delivery) (response interface{}, err error)) {
+
 	server.subscription.handle(
 		func(request amqp.Delivery) {
-			result, err := handle(request.Body)
-			response := amqp.Publishing{CorrelationId: request.CorrelationId}
-			if err != nil {
-				response.ContentType = "text/plain"
-				response.Body = []byte(err.Error())
-			} else {
-				response.ContentType = "application/json"
-				response.Body = result
+			response, err := handle(request)
+			message := amqp.Publishing{CorrelationId: request.CorrelationId}
+			if err == nil {
+				message.Body, err = json.Marshal(response)
 			}
-			err = server.exchange.channel.Publish(
-				server.exchange.name, // exchange
-				request.ReplyTo,      // routing key
-				false,                // mandatory
-				false,                // immediate
-				response)
+			if err != nil {
+				message.ContentType = "text/plain"
+				message.Body = []byte(err.Error())
+			} else {
+				message.ContentType = "application/json"
+			}
+			err = server.exchange.publish(
+				request.ReplyTo, // routing key
+				false,           // mandatory
+				false,           // immediate
+				message)
 			if err != nil {
 				server.client.LogErrorf(
-					`Failed to publish RPC-server "%s" response: "%s".`,
-					server.queue.Name, err)
+					`Failed to publish RPC-server response: "%s".`, err)
 			}
 		})
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-type rpcService struct {
+type rpcClient struct {
 	rpc
-
-	client *Client
-
-	responseSubscription messageSubscription
-
 	requestsCond *sync.Cond
 	requests     map[string]amqp.Publishing
 }
 
-func (service *rpcService) init(
-	name string, exchange *exchange, client *Client) error {
+func createRPCClient(
+	exchange *exchange, client *Client) (*rpcClient, error) {
 
-	err := service.rpc.init(name, exchange)
+	result := &rpcClient{}
+	err := result.init(exchange, client)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (client *rpcClient) init(exchange *exchange, mqClient *Client) error {
+
+	err := client.rpc.init("", exchange, mqClient)
 	if err != nil {
 		return err
 	}
 
-	service.client = client
-	service.requestsCond = sync.NewCond(&sync.Mutex{})
-	service.requests = make(map[string]amqp.Publishing)
+	client.requestsCond = sync.NewCond(&sync.Mutex{})
+	client.requests = make(map[string]amqp.Publishing)
 
-	err = service.responseSubscription.init(
-		"", service.exchange, true,
-		func(message string) { service.client.LogError(message + ".") })
-	if err != nil {
-		service.rpc.close()
-		return err
-	}
-
-	go service.responseSubscription.handle(func(response amqp.Delivery) {
-		service.exchange.responseChan <- response
+	go client.subscription.handle(func(response amqp.Delivery) {
+		client.exchange.responseChan <- response
 	})
 
 	return nil
 }
 
-func (service *rpcService) close() {
-	service.responseSubscription.close()
-
-	service.requestsCond.L.Lock()
-	for _, request := range service.requests {
-		service.exchange.responseChan <- amqp.Delivery{
+func (client *rpcClient) close() {
+	client.requestsCond.L.Lock()
+	for _, request := range client.requests {
+		client.exchange.responseChan <- amqp.Delivery{
 			ContentType:   "text/plain",
 			CorrelationId: request.CorrelationId,
 			ReplyTo:       request.ReplyTo,
-			Exchange:      service.exchange.name,
-			Body:          []byte("RPC-service is stopped, request result is unknown"),
+			Exchange:      client.exchange.name,
+			Body: []byte(
+				"RPC-service is stopped, request result is unknown"),
 		}
 	}
-	for len(service.requests) > 0 {
-		service.requestsCond.Wait()
+	for len(client.requests) > 0 {
+		client.requestsCond.Wait()
 	}
-	service.requestsCond.L.Unlock()
+	client.requestsCond.L.Unlock()
 
-	service.rpc.close()
+	client.rpc.close()
 }
 
-func (service *rpcService) request(
-	request []byte,
-	handleSuccess func([]byte), handleFail func(error)) {
+func (client *rpcClient) request(
+	routingKey string,
+	mandatory bool,
+	request interface{},
+	handleSuccess func([]byte),
+	handleFail func(error)) {
+
+	requestData, err := json.Marshal(request)
+	if err != nil {
+		handleFail(fmt.Errorf(`Failed to serialize RPC-request "%s": "%s"`,
+			request, err))
+		return
+	}
 
 	message := amqp.Publishing{
 		CorrelationId: "1234",
-		ReplyTo:       service.responseSubscription.queue.Name,
+		ReplyTo:       client.getReplyName(),
 		ContentType:   "application/json",
-		Body:          request}
+		Body:          requestData}
 
-	service.requestsCond.L.Lock()
-	service.requests[message.CorrelationId] = message
-	service.requestsCond.L.Unlock()
+	client.requestsCond.L.Lock()
+	client.requests[message.CorrelationId] = message
+	client.requestsCond.L.Unlock()
 	reportHandling := func() {
-		service.requestsCond.L.Lock()
-		delete(service.requests, message.CorrelationId)
-		service.requestsCond.L.Unlock()
-		service.requestsCond.Broadcast()
+		client.requestsCond.L.Lock()
+		delete(client.requests, message.CorrelationId)
+		client.requestsCond.L.Unlock()
+		client.requestsCond.Broadcast()
 	}
 
-	service.exchange.handlersChan <- struct {
+	client.exchange.handlersChan <- struct {
 		request        amqp.Publishing
 		handleResponse func(amqp.Delivery)
 		handleError    func(error)
@@ -194,11 +184,10 @@ func (service *rpcService) request(
 			reportHandling()
 		}}
 
-	err := service.exchange.channel.Publish(
-		service.exchange.name, // exchange
-		service.queue.Name,    // key
-		true,                  // mandatory
-		false,                 // immediate
+	err = client.exchange.publish(
+		routingKey, // routing key
+		mandatory,  // mandatory
+		false,      // immediate
 		message)
 	if err != nil {
 		message.ContentType = "text/plain"
@@ -206,12 +195,12 @@ func (service *rpcService) request(
 			ContentType:   "text/plain",
 			CorrelationId: message.CorrelationId,
 			ReplyTo:       message.ReplyTo,
-			Exchange:      service.exchange.name,
-			Body: []byte(
-				fmt.Sprintf(`Failed to publish RPC-request: "%s"`, err)),
+			Exchange:      client.exchange.name,
+			Body: []byte(fmt.Sprintf(`Failed to publish RPC-request: "%s"`,
+				err)),
 		}
-		service.client.LogError(string(response.Body) + ".")
-		service.exchange.responseChan <- response
+		client.client.LogError(string(response.Body) + ".")
+		client.exchange.responseChan <- response
 		return
 	}
 

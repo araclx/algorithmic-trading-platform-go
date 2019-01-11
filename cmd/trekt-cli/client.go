@@ -1,4 +1,4 @@
-// Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+// Copyright 2018 REKTRA Network, All Rights Reserved.
 
 package main
 
@@ -35,15 +35,12 @@ func (client *client) close() {
 }
 
 func (client *client) run() {
-	client.dataChan <- `[
-		{
-			"topic": "auth",
-			"data": {
+	client.dataChan <- `{
+			"auth": {
 				"login": "guest",
 				"password": "guest"
 			}
-		}
-	]`
+		}`
 	connCloseChan := make(chan struct{})
 	go func() {
 		defer close(connCloseChan)
@@ -69,11 +66,11 @@ func (client *client) run() {
 					`Failed to parse data from the connection: "%s".`, err)
 				return
 			}
-			go func() {
-				for _, message := range messages {
-					client.handleServerMessage(message)
+			for _, message := range messages {
+				for topic, data := range message {
+					client.handleServerTopic(topic, data)
 				}
-			}()
+			}
 		}
 	}()
 
@@ -96,4 +93,10 @@ func (client *client) run() {
 	}
 }
 
-func (client *client) handleServerMessage(message map[string]interface{}) {}
+func (client *client) handleServerTopic(topic string, data interface{}) {
+	switch topic {
+	case "auth":
+		log.Println("Authorized, requesting securities info...")
+		client.dataChan <- `{"securities":[]}`
+	}
+}

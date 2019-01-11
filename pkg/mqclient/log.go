@@ -1,4 +1,4 @@
-// Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+// Copyright 2018 REKTRA Network, All Rights Reserved.
 
 package mqclient
 
@@ -48,10 +48,12 @@ type LogExchange struct {
 	exchange
 }
 
-func createLogExchange(conn *amqp.Connection) (*LogExchange, error) {
+func createLogExchange(
+	conn *amqp.Connection, capacity uint16) (*LogExchange, error) {
+
 	result := &LogExchange{}
 	err := result.exchange.init(
-		"log", "topic", conn,
+		"log", "topic", conn, capacity,
 		func(message string) { fmt.Printf(`Log exchange error: "%s".`, message) })
 	if err != nil {
 		return nil, err
@@ -77,8 +79,7 @@ func (exchange *LogExchange) publishf(
 func (exchange *LogExchange) publish(
 	client *Client, severity, message string) {
 	log.Print(severity + ":\t" + message)
-	exchange.channel.Publish(
-		exchange.name,
+	exchange.exchange.publish(
 		severity+"."+client.id,
 		false, // mandatory
 		false, // immediate
@@ -92,14 +93,14 @@ func (exchange *LogExchange) publish(
 
 // LogSubscription represents subscription to logger data
 type LogSubscription struct {
-	messageSubscription
+	subscription
 }
 
 func createLogSubscription(
-	request string, exchange *LogExchange) (*LogSubscription, error) {
+	query string, exchange *LogExchange) (*LogSubscription, error) {
 	result := &LogSubscription{}
-	err := result.messageSubscription.init(
-		request, &exchange.exchange, true,
+	err := result.subscription.init(
+		query, &exchange.exchange, true,
 		func(message string) { log.Println(message + ".") })
 	if err != nil {
 		return nil, err
@@ -109,12 +110,12 @@ func createLogSubscription(
 
 // Close closes the subscription.
 func (subscription *LogSubscription) Close() {
-	subscription.messageSubscription.close()
+	subscription.subscription.close()
 }
 
 // Handle receives messages and calls a handler for each.
 func (subscription *LogSubscription) Handle(handler func(LogMessage)) {
-	subscription.messageSubscription.handle(func(message amqp.Delivery) {
+	subscription.subscription.handle(func(message amqp.Delivery) {
 		handler(LogMessage{amqpMessage: amqpMessage{message: message}})
 	})
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+// Copyright 2018 REKTRA Network, All Rights Reserved.
 
 package mqclient
 
@@ -11,6 +11,8 @@ import (
 // Client manages the messages sending and receiving.
 type Client struct {
 	conn          *amqp.Connection
+	Type          string
+	name          string
 	id            string
 	directChannel *amqp.Channel
 	directQueue   amqp.Queue
@@ -77,16 +79,58 @@ func (client *Client) LogDebug(message string) {
 }
 
 // CreateAuthExchange creates an exchange instance for authorization.
-func (client *Client) CreateAuthExchange() (*AuthExchange, error) {
-	return createAuthExchange(client)
+func (client *Client) CreateAuthExchange(
+	capacity uint16) (*AuthExchange, error) {
+
+	return createAuthExchange(client, capacity)
 }
 
-// CreateAuthExchangeOrExit creates an exchange instance for authorization,
-// or exit with error printing if creating is failed.
-func (client *Client) CreateAuthExchangeOrExit() *AuthExchange {
-	result, err := client.CreateAuthExchange()
+// CreateAuthExchangeOrExit creates an exchange instance for authorization
+// or exits with error printing if creating is failed.
+func (client *Client) CreateAuthExchangeOrExit(
+	capacity uint16) *AuthExchange {
+
+	result, err := client.CreateAuthExchange(capacity)
 	if err != nil {
 		log.Fatalf(`Failed to create auth-exchange: "%s".`, err)
+	}
+	return result
+}
+
+// CreateSecuritiesExchange creates an exchange instance for securities.
+func (client *Client) CreateSecuritiesExchange(
+	capacity uint16) (*SecuritiesExchange, error) {
+
+	return createSecuritiesExchange(client, capacity)
+}
+
+// CreateSecuritiesExchangeOrExit creates an exchange instance for securities
+// or exits with error printing if creating is failed.
+func (client *Client) CreateSecuritiesExchangeOrExit(
+	capacity uint16) *SecuritiesExchange {
+
+	result, err := client.CreateSecuritiesExchange(capacity)
+	if err != nil {
+		log.Fatalf(`Failed to create securities exchange: "%s".`, err)
+	}
+	return result
+}
+
+// CreateMarketDataExchange creates an exchange instance for market data.
+func (client *Client) CreateMarketDataExchange(
+	capacity uint16) (*MarketDataExchange, error) {
+
+	return createMarketDataExchange(client, capacity)
+}
+
+// CreateMarketDataExchangeOrExit creates an exchange instance for market data
+// or exits with error printing if creating is failed.
+func (client *Client) CreateMarketDataExchangeOrExit(
+	capacity uint16) *MarketDataExchange {
+
+	result, err := client.CreateMarketDataExchange(capacity)
+	if err != nil {
+		log.Fatalf(`Failed to create MD-exchange: "%s".`, err)
 	}
 	return result
 }

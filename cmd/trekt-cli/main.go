@@ -1,4 +1,4 @@
-// Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+// Copyright 2018 REKTRA Network, All Rights Reserved.
 
 package main
 
@@ -26,7 +26,7 @@ var (
 func main() {
 	flag.Parse()
 
-	app := app{mq: mqclient.DealOrExit(*mqBroker, "cli", *name)}
+	app := app{mq: mqclient.DealOrExit(*mqBroker, "cli", *name, 1)}
 	defer app.close()
 
 	if *logRequest != "" {

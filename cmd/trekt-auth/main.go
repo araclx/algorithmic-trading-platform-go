@@ -1,4 +1,4 @@
-// Copyright 2018 2018 REKTRA Network, All Rights Reserved.
+// Copyright 2018 REKTRA Network, All Rights Reserved.
 
 package main
 
@@ -24,10 +24,10 @@ func auth(login, password string) (*mqclient.Auth, error) {
 func main() {
 	flag.Parse()
 
-	mq := mqclient.DealOrExit(*mqBroker, "auth", *name)
+	mq := mqclient.DealOrExit(*mqBroker, "auth", *name, 1)
 	defer mq.Close()
 
-	exchange := mq.CreateAuthExchangeOrExit()
+	exchange := mq.CreateAuthExchangeOrExit(1)
 	defer exchange.Close()
 
 	server := exchange.CreateServerOrExit()
