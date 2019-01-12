@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/streadway/amqp"
 )
@@ -35,10 +36,19 @@ func Dial(
 
 	login := "guest"
 	password := "guest"
-	url := `amqp://%s:%s@` + broker + `:5672/`
-	conn, err := amqp.Dial(fmt.Sprintf(url, login, password))
-	if err != nil {
-		return nil, err
+	urlTemplate := `amqp://%s:%s@` + broker + `:5672/`
+	connURL := fmt.Sprintf(urlTemplate, login, password)
+	logURL := fmt.Sprintf(urlTemplate, login, "*****")
+
+	var conn *amqp.Connection
+	var err error
+	for {
+		conn, err = amqp.Dial(connURL)
+		if err == nil {
+			break
+		}
+		log.Printf(`Failed to connect to the message queuing broker "%s".`, logURL)
+		time.Sleep(5 * time.Second)
 	}
 
 	result := &Client{
@@ -81,8 +91,8 @@ func Dial(
 	if capacity != 1 {
 		capacityStatus = fmt.Sprintf(" with capacity %d", capacity)
 	}
-
 	result.LogDebugf(`Connected to the message queuing broker "%s"%s.`,
-		fmt.Sprintf(url, login, "*****"), capacityStatus)
+		logURL, capacityStatus)
+
 	return result, nil
 }
