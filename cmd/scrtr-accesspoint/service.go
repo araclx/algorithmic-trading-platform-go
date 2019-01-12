@@ -32,7 +32,7 @@ func (service *service) handle(
 	conn, err := service.websocketUpgrader.Upgrade(writer, request, nil)
 	if err != nil {
 		service.mq.LogDebugf(
-			`Failed to updgrade connection from "%s" (%d): "%s".`,
+			`Failed to upgrade connection from "%s" (%d): "%s".`,
 			request.RemoteAddr,
 			atomic.AddUint64(&service.numberOfConnections, ^uint64(0)),
 			err)

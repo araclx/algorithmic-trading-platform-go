@@ -17,9 +17,13 @@ type connection struct {
 	service    *service
 	instanceID uint64
 
-	writeChan      chan string
-	securitiesChan chan mqclient.SecurityStateList
-	strandChan     chan func() bool
+	writeChan              chan string
+	securitiesSubscription struct {
+		id          mqclient.SecuritiesSubscriptionNotificationID
+		updatesChan <-chan mqclient.SecurityStateList
+	}
+
+	strandChan chan func() bool
 
 	protocol protocol
 
@@ -96,8 +100,9 @@ func (connection *connection) run() {
 	}()
 
 	defer func() {
-		if connection.securitiesChan != nil {
-			close(connection.securitiesChan)
+		if connection.securitiesSubscription.updatesChan != nil {
+			connection.service.securities.CloseNotification(
+				connection.securitiesSubscription.id)
 		}
 	}()
 
@@ -107,7 +112,7 @@ func (connection *connection) run() {
 			if !task() {
 				return
 			}
-		case update, isOpened := <-connection.securitiesChan:
+		case update, isOpened := <-connection.securitiesSubscription.updatesChan:
 			if !isOpened {
 				return
 			}
@@ -193,9 +198,10 @@ func (connection *connection) sendSecurityList() {
 	connection.service.securities.Request(
 		func(securities mqclient.SecurityStateList) {
 			connection.strandChan <- func() bool {
-				if connection.securitiesChan == nil {
-					connection.securitiesChan = make(chan mqclient.SecurityStateList, 1)
-					connection.service.securities.Notify(connection.securitiesChan)
+				if connection.securitiesSubscription.updatesChan == nil {
+					connection.securitiesSubscription.id,
+						connection.securitiesSubscription.updatesChan =
+						connection.service.securities.CreateNotification()
 				}
 				connection.send(connection.protocol.securityList(securities))
 				return true

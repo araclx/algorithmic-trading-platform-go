@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rektra-network/trekt-go/pkg/tradinglib"
@@ -337,6 +338,14 @@ func (server *SecuritiesServer) unregisterAll() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+// SecuritiesSubscriptionNotificationID represents ID of notification
+// subscription.
+type SecuritiesSubscriptionNotificationID = uint64
+
+// SecuritiesSubscriptionNotificationSubscriber allows creating security update
+// subscription.
+type SecuritiesSubscriptionNotificationSubscriber struct{}
+
 // SecuritiesSubscription represents subscription to security lists changes.
 type SecuritiesSubscription struct {
 	clientSubscription
@@ -364,8 +373,13 @@ type SecuritiesSubscription struct {
 
 	snapshotRequestsChan chan func(SecurityStateList)
 
-	notifyRequestsChan chan chan<- SecurityStateList
-	notifyChannels     []chan<- SecurityStateList
+	prevNotificationID SecuritiesSubscriptionNotificationID
+	notifyRequestsChan chan struct {
+		id         SecuritiesSubscriptionNotificationID
+		notifyChan chan SecurityStateList
+	}
+	notifyCancelRequestChan chan SecuritiesSubscriptionNotificationID
+	notifyChannels          map[SecuritiesSubscriptionNotificationID]chan SecurityStateList
 }
 
 func createSecuritiesSubscription(
@@ -467,8 +481,14 @@ func createSecuritiesSubscription(
 		chan func(SecurityStateList), clientsCapacity)
 
 	result.notifyRequestsChan = make(
-		chan chan<- SecurityStateList, clientsCapacity)
-	result.notifyChannels = []chan<- SecurityStateList{}
+		chan struct {
+			id         SecuritiesSubscriptionNotificationID
+			notifyChan chan SecurityStateList
+		}, clientsCapacity)
+	result.notifyCancelRequestChan = make(
+		chan SecuritiesSubscriptionNotificationID, clientsCapacity)
+	result.notifyChannels =
+		map[SecuritiesSubscriptionNotificationID]chan SecurityStateList{}
 
 	go result.run()
 
@@ -477,6 +497,7 @@ func createSecuritiesSubscription(
 
 // Close closes the subscription.
 func (subscription *SecuritiesSubscription) Close() {
+	close(subscription.notifyCancelRequestChan)
 	close(subscription.notifyRequestsChan)
 	close(subscription.snapshotRequestsChan)
 	subscription.snapshotsSubscription.close()
@@ -486,12 +507,27 @@ func (subscription *SecuritiesSubscription) Close() {
 	close(subscription.updatesChan)
 }
 
-// Notify accepts channel to notify about securities updates through it until
-// channel will not be closed by channel owner.
-func (subscription *SecuritiesSubscription) Notify(
-	notifyChan chan<- SecurityStateList) {
+// CreateNotification creates a new channel to notify about securities updates
+// until CloseNotification will call for returned ID. Must be called only from
+func (subscription *SecuritiesSubscription) CreateNotification() (
+	SecuritiesSubscriptionNotificationID, <-chan SecurityStateList) {
 
-	subscription.notifyRequestsChan <- notifyChan
+	id := atomic.AddUint64(&subscription.prevNotificationID, 1)
+	notifyChan := make(chan SecurityStateList, 1)
+	subscription.notifyRequestsChan <- struct {
+		id         SecuritiesSubscriptionNotificationID
+		notifyChan chan SecurityStateList
+	}{
+		id:         id,
+		notifyChan: notifyChan}
+	return id, notifyChan
+}
+
+// CloseNotification cancels notification subscription and closes the channel.
+func (subscription *SecuritiesSubscription) CloseNotification(
+	id SecuritiesSubscriptionNotificationID) {
+
+	subscription.notifyCancelRequestChan <- id
 }
 
 // Request calls passed callback in another goroutine and passes requested
@@ -504,6 +540,12 @@ func (subscription *SecuritiesSubscription) Request(
 }
 
 func (subscription *SecuritiesSubscription) run() {
+	defer func() {
+		for _, notifyChan := range subscription.notifyChannels {
+			close(notifyChan)
+		}
+	}()
+
 	heartbeatTicker := time.NewTicker(1 * time.Minute)
 	defer heartbeatTicker.Stop()
 	for {
@@ -525,11 +567,16 @@ func (subscription *SecuritiesSubscription) run() {
 				return
 			}
 			subscription.handleSnapshotRequest(callback)
-		case notifyChan, isOpen := <-subscription.notifyRequestsChan:
+		case request, isOpen := <-subscription.notifyRequestsChan:
 			if !isOpen {
 				return
 			}
-			subscription.handleNotifyRequest(notifyChan)
+			subscription.handleNotifyRequest(request)
+		case id, isOpen := <-subscription.notifyCancelRequestChan:
+			if !isOpen {
+				return
+			}
+			subscription.handleNotifyCancelRequest(id)
 		case <-heartbeatTicker.C:
 			subscription.checkSources()
 		}
@@ -670,7 +717,7 @@ func (subscription *SecuritiesSubscription) handleSecuritiesSnapshot(
 	merger := securitiesUpdateMerger{
 		subscription: subscription,
 		changed:      []SecurityState{},
-		actionName:   "shanpshot"}
+		actionName:   "snapshot"}
 	for exchange, update := range snapshot {
 		merger.merge(exchange, update, source, false)
 	}
@@ -716,15 +763,9 @@ func (subscription *SecuritiesSubscription) checkSources() {
 }
 
 func (subscription *SecuritiesSubscription) notify(updates SecurityStateList) {
-	i := 0
-	for k, notifyChan := range subscription.notifyChannels {
+	for _, notifyChan := range subscription.notifyChannels {
 		notifyChan <- updates
-		if i != k {
-			subscription.notifyChannels[i] = notifyChan
-		}
-		i++
 	}
-	subscription.notifyChannels = subscription.notifyChannels[:i]
 }
 
 func (subscription *SecuritiesSubscription) handleSnapshotRequest(
@@ -740,9 +781,20 @@ func (subscription *SecuritiesSubscription) handleSnapshotRequest(
 }
 
 func (subscription *SecuritiesSubscription) handleNotifyRequest(
-	notifyChan chan<- SecurityStateList) {
+	request struct {
+		id         SecuritiesSubscriptionNotificationID
+		notifyChan chan SecurityStateList
+	}) {
 
-	subscription.notifyChannels = append(subscription.notifyChannels, notifyChan)
+	subscription.notifyChannels[request.id] = request.notifyChan
+}
+
+func (subscription *SecuritiesSubscription) handleNotifyCancelRequest(
+	id SecuritiesSubscriptionNotificationID) {
+	if notifyCannel, has := subscription.notifyChannels[id]; has {
+		close(notifyCannel)
+		delete(subscription.notifyChannels, id)
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
