@@ -15,12 +15,24 @@ THIS_FILE := $(lastword $(MAKEFILE_LIST))
 
 .DEFAULT_GOAL := help
 
-define build_docker_cmd_image
+define build_docker_builder_image
+	$(eval BUILDER_SOURCE_TAG = ${GO_VER}-${NODE_OS_NAME}${NODE_OS_TAG})
+	$(eval BUILDER_TAG = $(ORGANIZATION)/builder.golang:$(BUILDER_SOURCE_TAG))
 	docker build \
 		--rm \
-		--build-arg GO_VER=$(GO_VER) \
+		--build-arg TAG=$(BUILDER_SOURCE_TAG) \
+		--file "$(CURDIR)/build/builder/Dockerfile" \
+		--tag $(BUILDER_TAG) \
+		./
+endef
+
+define build_docker_cmd_image
+	$(if $(BUILDER_TAG),, $(call build_docker_builder_image))
+	docker build \
+		--rm \
 		--build-arg NODE_OS_NAME=$(NODE_OS_NAME) \
 		--build-arg NODE_OS_TAG=$(NODE_OS_TAG) \
+		--build-arg BUILDER=$(BUILDER_TAG) \
 		--file "$(CURDIR)/cmd/$(1)/Dockerfile" \
 		--tag $(2) \
 		./
@@ -52,9 +64,9 @@ build-binance: ## Build Binance connector docker image from actual local sources
 	@$(call build_docker_cmd_image,trekt-exchange-binance,$(IMAGE_TAG_EXCHANGE_BINANCE))
 
 build: ## Build all docker images from actual local sources.
-	$(call make_target,build-accesspoint)
-	$(call make_target,build-auth)
-	$(call make_target,build-binance)
+	@$(call make_target,build-accesspoint)
+	@$(call make_target,build-auth)
+	@$(call make_target,build-binance)
 
 
 release-accesspoint: ## Push access point node image to the hub.
