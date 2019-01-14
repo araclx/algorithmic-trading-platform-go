@@ -1,6 +1,6 @@
 // Copyright 2018 REKTRA Network, All Rights Reserved.
 
-package mqclient
+package trekt
 
 import (
 	"log"

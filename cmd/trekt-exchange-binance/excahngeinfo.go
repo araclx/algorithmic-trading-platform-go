@@ -9,26 +9,25 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rektra-network/trekt-go/pkg/tradinglib"
-
 	"github.com/mitchellh/mapstructure"
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
+	"github.com/rektra-network/trekt-go/pkg/tradinglib"
+	t "github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 func runExchangeInfoUpdating(
 	updateInterval time.Duration,
-	mq *mqclient.Client,
+	trekt *t.Trekt,
 	stopChan <-chan struct{}) {
 
 	updater := exchangeInfoUpdater{
-		mq:          mq,
-		securities:  make(map[string]mqclient.SecurityState),
-		updatesChan: make(chan mqclient.SecurityStateList, 1),
+		trekt:       trekt,
+		securities:  make(map[string]t.SecurityState),
+		updatesChan: make(chan t.SecurityStateList, 1),
 	}
 	defer close(updater.updatesChan)
 
 	go func() {
-		exchange := mq.CreateSecuritiesExchangeOrExit(1)
+		exchange := trekt.CreateSecuritiesExchangeOrExit(1)
 		server := exchange.CreateServerOrExit()
 		server.RunOrExit(updater.updatesChan)
 		server.Close()
@@ -65,19 +64,19 @@ type symbolInfo struct {
 }
 
 type exchangeInfoUpdater struct {
-	mq          *mqclient.Client
-	securities  map[string]mqclient.SecurityState
-	updatesChan chan mqclient.SecurityStateList
+	trekt       *t.Trekt
+	securities  map[string]t.SecurityState
+	updatesChan chan t.SecurityStateList
 }
 
 func (updater *exchangeInfoUpdater) update() bool {
 	symbols, err := requestSymbolInfo()
 	if err != nil {
-		updater.mq.LogErrorf("%s.", err)
+		updater.trekt.LogErrorf("%s.", err)
 		return false
 	}
 
-	updates := make(mqclient.SecurityStateList, 0)
+	updates := make(t.SecurityStateList, 0)
 
 	new := 0
 	activated := 0
@@ -100,12 +99,12 @@ func (updater *exchangeInfoUpdater) update() bool {
 			deactivated++
 		}
 
-		security = mqclient.SecurityState{
+		security = t.SecurityState{
 			Security: tradinglib.Security{
 				Symbol: tradinglib.CreateCurrencyPairSymbol(
 					symbol.BaseAsset,
 					symbol.QuoteAsset),
-				Exchange: updater.mq.Type,
+				Exchange: updater.trekt.Type,
 				ID:       symbol.Symbol},
 			IsActive: &isActive}
 
@@ -115,7 +114,7 @@ func (updater *exchangeInfoUpdater) update() bool {
 
 	removed := 0
 	if len(updater.securities) != len(known) {
-		securities := make(map[string]mqclient.SecurityState)
+		securities := make(map[string]t.SecurityState)
 		for symbol, security := range updater.securities {
 			if _, isKnown := known[symbol]; isKnown {
 				securities[symbol] = security
@@ -129,7 +128,7 @@ func (updater *exchangeInfoUpdater) update() bool {
 	}
 
 	if len(updates) != 0 {
-		updater.mq.LogDebugf(
+		updater.trekt.LogDebugf(
 			"%d securities updated. Full list: %d, added: %d, removed: %d"+
 				", activated: %d, deactivated: %d.",
 			len(updates), len(updater.securities),
@@ -174,7 +173,8 @@ func requestSymbolInfo() ([]symbolInfo, error) {
 	err = mapstructure.Decode(symbolsNode, &result)
 	if err != nil {
 		return nil, fmt.Errorf(
-			`Failed to parse exchange info request response (bad symbol format): "%s"`,
+			`Failed to parse exchange info request response (bad symbol format):`+
+				` "%s"`,
 			err)
 	}
 

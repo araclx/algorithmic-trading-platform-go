@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -25,25 +25,25 @@ var (
 func main() {
 	flag.Parse()
 
-	mq := mqclient.DealOrExit(*mqBroker, "accesspoint", *name, uint16(*capacity))
-	defer mq.Close()
+	trekt := trekt.DealOrExit(*mqBroker, "accesspoint", *name, uint16(*capacity))
+	defer trekt.Close()
 
-	authExchange := mq.CreateAuthExchangeOrExit(uint16(*capacity))
+	authExchange := trekt.CreateAuthExchangeOrExit(uint16(*capacity))
 	defer authExchange.Close()
 	authService := authExchange.CreateServiceOrExit()
 	defer authService.Close()
 
-	securitiesExchange := mq.CreateSecuritiesExchangeOrExit(uint16(*capacity))
+	securitiesExchange := trekt.CreateSecuritiesExchangeOrExit(uint16(*capacity))
 	defer securitiesExchange.Close()
 	securitiesSubscription := securitiesExchange.CreateSubscriptionOrExit(
 		uint16(*capacity))
 	defer securitiesSubscription.Close()
 
-	marketData := mq.CreateMarketDataExchangeOrExit(uint16(*capacity))
+	marketData := trekt.CreateMarketDataExchangeOrExit(uint16(*capacity))
 	defer marketData.Close()
 
 	service := service{
-		mq:         mq,
+		trekt:      trekt,
 		auth:       authService,
 		securities: securitiesSubscription,
 		marketData: marketData}
@@ -55,7 +55,7 @@ func main() {
 		Handler: router,
 	}
 
-	mq.LogDebugf(`Opening server at "%s%s"...`, *host, *endpoint)
+	trekt.LogDebugf(`Opening server at "%s%s"...`, *host, *endpoint)
 	var listener net.Listener
 	if !*isUnsecured {
 		listener = autocert.NewListener(*host)
@@ -63,7 +63,7 @@ func main() {
 		var err error
 		listener, err = net.Listen("tcp", *host)
 		if err != nil {
-			mq.LogErrorf(`Failed to start listener: "%s".`, err)
+			trekt.LogErrorf(`Failed to start listener: "%s".`, err)
 			return
 		}
 	}
@@ -73,10 +73,10 @@ func main() {
 		if *isUnsecured {
 			secureType = "Unsecured"
 		}
-		mq.LogDebugf(`%s server opened at "%s".`,
+		trekt.LogDebugf(`%s server opened at "%s".`,
 			secureType,
 			listener.Addr().String())
 	}
 	server.Serve(listener)
-	mq.LogDebugf(`Server is stopped.`)
+	trekt.LogDebugf(`Server is stopped.`)
 }

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 	"github.com/rektra-network/trekt-go/pkg/tradinglib"
 )
 
@@ -76,7 +76,7 @@ func (*protocol) securityListTopic() string {
 }
 
 func (protocol *protocol) securityList(
-	list mqclient.SecurityStateList) message {
+	list trekt.SecurityStateList) message {
 
 	exchanges := []string{}
 	securities := map[string]*[]string{}

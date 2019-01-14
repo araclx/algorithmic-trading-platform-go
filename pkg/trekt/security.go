@@ -1,6 +1,6 @@
 // Copyright 2018 REKTRA Network, All Rights Reserved.
 
-package mqclient
+package trekt
 
 import (
 	"encoding/json"
@@ -39,16 +39,16 @@ type securityStateListMessage = []securitySymbolStateMessage
 // SecuritiesExchange represents security states exchange.
 type SecuritiesExchange struct {
 	exchange
-	client *Client
+	trekt *Trekt
 }
 
 func createSecuritiesExchange(
-	client *Client, capacity uint16) (*SecuritiesExchange, error) {
+	trekt *Trekt, capacity uint16) (*SecuritiesExchange, error) {
 
-	result := &SecuritiesExchange{client: client}
+	result := &SecuritiesExchange{trekt: trekt}
 	err := result.exchange.init(
-		"securities", "topic", result.client.conn, capacity,
-		func(message string) { result.client.LogError(message + ".") })
+		"securities", "topic", result.trekt.conn, capacity,
+		func(message string) { result.trekt.LogError(message + ".") })
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (exchange *SecuritiesExchange) CreateServer() (*SecuritiesServer, error) {
 func (exchange *SecuritiesExchange) CreateServerOrExit() *SecuritiesServer {
 	result, err := exchange.CreateServer()
 	if err != nil {
-		exchange.client.LogErrorf(`Failed to create securities server: "%s".`,
+		exchange.trekt.LogErrorf(`Failed to create securities server: "%s".`,
 			err)
 		os.Exit(1)
 	}
@@ -94,7 +94,7 @@ func (exchange *SecuritiesExchange) CreateSubscriptionOrExit(
 
 	result, err := exchange.CreateSubscription(capacity)
 	if err != nil {
-		exchange.client.LogErrorf(`Failed to create securities subscription: "%s".`,
+		exchange.trekt.LogErrorf(`Failed to create securities subscription: "%s".`,
 			err)
 		os.Exit(1)
 	}
@@ -127,7 +127,7 @@ func (server *SecuritiesServer) RunOrExit(
 
 	err := server.Run(updatesChan)
 	if err != nil {
-		server.exchange.client.LogErrorf(`Failed to run securities server: "%s".`,
+		server.exchange.trekt.LogErrorf(`Failed to run securities server: "%s".`,
 			err)
 		os.Exit(1)
 	}
@@ -146,7 +146,7 @@ func (server *SecuritiesServer) Run(
 	err := server.heartbeat.init(
 		"", // query
 		&server.exchange.exchange,
-		server.exchange.client)
+		server.exchange.trekt)
 	if err != nil {
 		return err
 	}
@@ -160,7 +160,7 @@ func (server *SecuritiesServer) Run(
 		"*.request", // query
 		&server.exchange.exchange,
 		true, // auto-ack
-		server.exchange.client)
+		server.exchange.trekt)
 	if err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func (server *SecuritiesServer) Run(
 		var err error
 		message.Body, err = json.Marshal(response)
 		if err != nil {
-			server.exchange.client.LogErrorf(
+			server.exchange.trekt.LogErrorf(
 				`Failed to serialize security state list: "%s".`, err)
 			return
 		}
@@ -188,7 +188,7 @@ func (server *SecuritiesServer) Run(
 			false, // immediate
 			message)
 		if err != nil {
-			server.exchange.client.LogErrorf(
+			server.exchange.trekt.LogErrorf(
 				`Failed to publish security state list: "%s".`, err)
 		}
 
@@ -302,7 +302,7 @@ func (server *SecuritiesServer) broadcast(
 		var err error
 		message.Body, err = json.Marshal(list)
 		if err != nil {
-			server.exchange.client.LogErrorf(
+			server.exchange.trekt.LogErrorf(
 				`Failed to serialize security state list: "%s".`, err)
 			continue
 		}
@@ -312,7 +312,7 @@ func (server *SecuritiesServer) broadcast(
 			false, // immediate
 			message)
 		if err != nil {
-			server.exchange.client.LogErrorf(
+			server.exchange.trekt.LogErrorf(
 				`Failed to publish security state list: "%s".`, err)
 		}
 	}
@@ -322,7 +322,7 @@ func (server *SecuritiesServer) unregisterAll() {
 	if len(server.securities) == 0 {
 		return
 	}
-	server.exchange.client.LogInfof(
+	server.exchange.trekt.LogInfof(
 		"Removing securities from %d exchanges"+
 			" due to the registration process is stopped...",
 		len(server.securities))
@@ -404,7 +404,7 @@ func createSecuritiesSubscription(
 		"*.update", // query
 		&exchange.exchange,
 		true, // is auto-ack
-		exchange.client)
+		exchange.trekt)
 	if err != nil {
 		close(result.updatesChan)
 		return nil, err
@@ -419,13 +419,13 @@ func createSecuritiesSubscription(
 			source:   message.ReplyTo}
 		err := json.Unmarshal(message.Body, &update.update)
 		if err != nil {
-			result.client.LogErrorf(`Failed to parse security list update: "%s".`,
+			result.trekt.LogErrorf(`Failed to parse security list update: "%s".`,
 				err)
 		}
 		result.updatesChan <- update
 	})
 
-	err = result.rpc.init(result.exchange, result.client)
+	err = result.rpc.init(result.exchange, result.trekt)
 	if err != nil {
 		close(result.snapshotsChan)
 		result.subscription.close()
@@ -441,7 +441,7 @@ func createSecuritiesSubscription(
 		"", // query
 		result.exchange,
 		true, // auto-ack
-		result.client)
+		result.trekt)
 	if err != nil {
 		result.rpc.close()
 		close(result.snapshotsChan)
@@ -458,7 +458,7 @@ func createSecuritiesSubscription(
 			source:   message.ReplyTo}
 		err := json.Unmarshal(message.Body, &snapshot.snapshot)
 		if err != nil {
-			result.client.LogErrorf(`Failed to parse security list snapshot: "%s".`,
+			result.trekt.LogErrorf(`Failed to parse security list snapshot: "%s".`,
 				err)
 		}
 		result.snapshotsChan <- snapshot
@@ -609,7 +609,7 @@ func (merger *securitiesUpdateMerger) merge(
 
 		symbol, err := tradinglib.ImportSymbol(update.Type, update.Symbol)
 		if err != nil {
-			merger.subscription.client.LogErrorf(
+			merger.subscription.trekt.LogErrorf(
 				`Failed to import security symbol: "%s".`, err)
 			continue
 		}
@@ -686,7 +686,7 @@ func (merger *securitiesUpdateMerger) merge(
 		return
 	}
 
-	merger.subscription.client.LogInfof(
+	merger.subscription.trekt.LogInfof(
 		`Received %d securities in %s from "%s". Full list: %d`+
 			", added: %d, removed: %d, activated: %d, deactivated: %d.",
 		len(updates), merger.actionName, exchange, len(*securities),
@@ -753,7 +753,7 @@ func (subscription *SecuritiesSubscription) checkSources() {
 				for exchange := range exchanges {
 					exchangesList = append(exchangesList, exchange)
 				}
-				subscription.client.LogInfof(
+				subscription.trekt.LogInfof(
 					`Deleted %d securities from "%s"`+
 						` by source "%s" heartbeat error "%s".`,
 					len(changed), strings.Join(exchangesList, `", "`), source, err)

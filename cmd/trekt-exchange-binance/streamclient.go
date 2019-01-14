@@ -7,14 +7,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
-
 	"github.com/gorilla/websocket"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 func runStreamClient(
-	exchange *mqclient.MarketDataExchange,
-	mq *mqclient.Client,
+	exchange *trekt.MarketDataExchange,
+	trekt *trekt.Trekt,
 	stopChan <-chan struct{}) {
 
 	requestsChan := make(chan struct {
@@ -34,7 +33,7 @@ func runStreamClient(
 		return nil
 	})
 	if err != nil {
-		mq.LogErrorf(`Failed to handle market data requests: "%s".`, err)
+		trekt.LogErrorf(`Failed to handle market data requests: "%s".`, err)
 		os.Exit(1)
 	}
 
@@ -89,7 +88,7 @@ func runStreamClient(
 				numberOfFailedConnections := 0
 				for {
 					client, isNotStopped := createStreamClientOrWait(
-						securities, server, mq, &numberOfFailedConnections, stopChan)
+						securities, server, trekt, &numberOfFailedConnections, stopChan)
 					if !isNotStopped {
 						return
 					}
@@ -112,8 +111,8 @@ func runStreamClient(
 }
 
 type streamClient struct {
-	server *mqclient.MarketDataServer
-	mq     *mqclient.Client
+	server *trekt.MarketDataServer
+	trekt  *trekt.Trekt
 	conn   *websocket.Conn
 
 	writeChan chan string
@@ -121,14 +120,14 @@ type streamClient struct {
 
 func createStreamClientOrWait(
 	securities map[string]struct{},
-	server *mqclient.MarketDataServer,
-	mq *mqclient.Client,
+	server *trekt.MarketDataServer,
+	trekt *trekt.Trekt,
 	numberOfFailedConnections *int,
 	stopChan <-chan struct{}) (*streamClient, bool) {
 
-	result, err := createStreamClient(securities, server, mq)
+	result, err := createStreamClient(securities, server, trekt)
 	if err == nil {
-		mq.LogInfof("Connected to the stream access point (%d).",
+		trekt.LogInfof("Connected to the stream access point (%d).",
 			*numberOfFailedConnections)
 		*numberOfFailedConnections = 0
 		return result, true
@@ -136,7 +135,7 @@ func createStreamClientOrWait(
 
 	(*numberOfFailedConnections)++
 
-	mq.LogErrorf(
+	trekt.LogErrorf(
 		`Failed to connect the stream access point: "%s" (%d).`,
 		err, *numberOfFailedConnections)
 
@@ -161,8 +160,8 @@ func createStreamClientOrWait(
 
 func createStreamClient(
 	securities map[string]struct{},
-	server *mqclient.MarketDataServer,
-	mq *mqclient.Client) (*streamClient, error) {
+	server *trekt.MarketDataServer,
+	trekt *trekt.Trekt) (*streamClient, error) {
 
 	url := url.URL{Scheme: "wss", Host: "stream.binance.com:9443", Path: "/"}
 	conn, _, err := websocket.DefaultDialer.Dial(url.String(), nil)
@@ -180,7 +179,7 @@ func createStreamClient(
 
 func (client *streamClient) close() {
 	client.conn.Close()
-	client.mq.LogInfo("Connection closed.")
+	client.trekt.LogInfo("Connection closed.")
 }
 
 func (client *streamClient) run(stopChan <-chan struct{}) bool {
@@ -190,11 +189,12 @@ func (client *streamClient) run(stopChan <-chan struct{}) bool {
 		for {
 			_, data, err := client.conn.ReadMessage()
 			if err != nil {
-				client.mq.LogDebugf(`Failed to read data from the server: "%s".`, err)
+				client.trekt.LogDebugf(`Failed to read data from the server: "%s".`,
+					err)
 				break
 			}
 			if len(data) == 0 {
-				client.mq.LogDebugf("EOF is received from the connection.")
+				client.trekt.LogDebugf("EOF is received from the connection.")
 				break
 			}
 			readChan <- data
@@ -214,7 +214,7 @@ func (client *streamClient) run(stopChan <-chan struct{}) bool {
 			err := client.conn.WriteMessage(
 				websocket.TextMessage, []byte(message))
 			if err != nil {
-				client.mq.LogDebugf(`Failed to send message: "%s".`, err)
+				client.trekt.LogDebugf(`Failed to send message: "%s".`, err)
 				break
 			}
 		}
@@ -237,5 +237,5 @@ func (client *streamClient) run(stopChan <-chan struct{}) bool {
 }
 
 func (client *streamClient) handleMessages(data []byte) {
-	client.mq.LogDebugf("MESSAGE: %s", string(data))
+	client.trekt.LogDebugf("MESSAGE: %s", string(data))
 }

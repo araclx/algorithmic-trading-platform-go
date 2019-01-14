@@ -7,12 +7,12 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 type app struct {
-	mq              *mqclient.Client
-	logSubscription *mqclient.LogSubscription
+	trekt           *trekt.Trekt
+	logSubscription *trekt.LogSubscription
 	client          *client
 }
 
@@ -25,20 +25,20 @@ func (app *app) close() {
 		app.logSubscription.Close()
 		app.logSubscription = nil
 	}
-	if app.mq != nil {
-		app.mq.Close()
-		app.mq = nil
+	if app.trekt != nil {
+		app.trekt.Close()
+		app.trekt = nil
 	}
 }
 
 func (app *app) startLogListening(request string) {
 	var err error
-	app.logSubscription, err = app.mq.Log.Subscribe(request)
+	app.logSubscription, err = app.trekt.Log.Subscribe(request)
 	if err != nil {
 		log.Fatalf(`Failed to subscribe: "%s".`, err)
 	}
 	go app.logSubscription.Handle(
-		func(message mqclient.LogMessage) {
+		func(message trekt.LogMessage) {
 			log.Printf("Log event: %s\t%s: %s",
 				strings.ToUpper(message.GetLevel()),
 				message.GetNodeID(),

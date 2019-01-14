@@ -3,16 +3,16 @@
 package main
 
 import (
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 type user struct {
-	auth       mqclient.Auth
+	auth       trekt.Auth
 	methods    map[string]func(topic string, data interface{}) bool
-	marketData *mqclient.MarketDataService
+	marketData *trekt.MarketDataService
 }
 
-func createUser(auth mqclient.Auth) user {
+func createUser(auth trekt.Auth) user {
 	result := user{auth: auth}
 	result.methods = make(map[string]func(string, interface{}) bool)
 	return result

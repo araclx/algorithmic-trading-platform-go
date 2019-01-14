@@ -6,7 +6,7 @@ import (
 	"errors"
 	"flag"
 
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 var (
@@ -14,20 +14,20 @@ var (
 	name     = flag.String("name", "", "node instance name")
 )
 
-func auth(login, password string) (*mqclient.Auth, error) {
+func auth(login, password string) (*trekt.Auth, error) {
 	if login != "guest" || password != "guest" {
 		return nil, errors.New("Wrong login or password")
 	}
-	return &mqclient.Auth{Login: login}, nil
+	return &trekt.Auth{Login: login}, nil
 }
 
 func main() {
 	flag.Parse()
 
-	mq := mqclient.DealOrExit(*mqBroker, "auth", *name, 1)
-	defer mq.Close()
+	trekt := trekt.DealOrExit(*mqBroker, "auth", *name, 1)
+	defer trekt.Close()
 
-	exchange := mq.CreateAuthExchangeOrExit(1)
+	exchange := trekt.CreateAuthExchangeOrExit(1)
 	defer exchange.Close()
 
 	server := exchange.CreateServerOrExit()

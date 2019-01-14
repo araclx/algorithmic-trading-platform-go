@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
-
 	"github.com/gorilla/websocket"
 	"github.com/mitchellh/mapstructure"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 type connection struct {
@@ -19,8 +18,8 @@ type connection struct {
 
 	writeChan              chan string
 	securitiesSubscription struct {
-		id          mqclient.SecuritiesSubscriptionNotificationID
-		updatesChan <-chan mqclient.SecurityStateList
+		id          trekt.SecuritiesSubscriptionNotificationID
+		updatesChan <-chan trekt.SecurityStateList
 	}
 
 	strandChan chan func() bool
@@ -41,7 +40,7 @@ func createConnection(
 		service:    service,
 		instanceID: instanceID,
 		protocol:   createProtocol(),
-		user:       createUser(mqclient.Auth{}),
+		user:       createUser(trekt.Auth{}),
 	}
 	result.logDebugf(`Connected from "%s".`, conn.RemoteAddr())
 	return result
@@ -159,7 +158,7 @@ func (connection *connection) handleClientMessages(data []byte) bool {
 
 func (connection *connection) authorize(topic string, data interface{}) bool {
 	delete(connection.user.methods, topic)
-	request := mqclient.AuthRequest{}
+	request := trekt.AuthRequest{}
 	err := mapstructure.Decode(data, &request)
 	if err != nil {
 		connection.logWarnf(
@@ -171,7 +170,7 @@ func (connection *connection) authorize(topic string, data interface{}) bool {
 	connection.logDebugf(`Authorizing with login "%s"...`, request.Login)
 	connection.service.auth.Request(
 		request,
-		func(auth mqclient.Auth) {
+		func(auth trekt.Auth) {
 			connection.strandChan <- func() bool {
 				if !connection.initUser(auth) {
 					connection.send(connection.protocol.error("Internal error."))
@@ -196,7 +195,7 @@ func (connection *connection) authorize(topic string, data interface{}) bool {
 
 func (connection *connection) sendSecurityList() {
 	connection.service.securities.Request(
-		func(securities mqclient.SecurityStateList) {
+		func(securities trekt.SecurityStateList) {
 			connection.strandChan <- func() bool {
 				if connection.securitiesSubscription.updatesChan == nil {
 					connection.securitiesSubscription.id,
@@ -209,7 +208,7 @@ func (connection *connection) sendSecurityList() {
 		})
 }
 
-func (connection *connection) initUser(auth mqclient.Auth) bool {
+func (connection *connection) initUser(auth trekt.Auth) bool {
 	user := createUser(auth)
 	for key, value := range connection.user.methods {
 		user.methods[key] = value
@@ -248,26 +247,28 @@ func (connection *connection) formatLogRecord(source string) string {
 		connection.instanceID) + source
 }
 func (connection *connection) logErrorf(format string, args ...interface{}) {
-	connection.service.mq.LogErrorf(connection.formatLogRecord(format), args...)
+	connection.service.trekt.LogErrorf(
+		connection.formatLogRecord(format), args...)
 }
 func (connection *connection) logError(message string) {
-	connection.service.mq.LogError(connection.formatLogRecord(message))
+	connection.service.trekt.LogError(connection.formatLogRecord(message))
 }
 func (connection *connection) logWarnf(format string, args ...interface{}) {
-	connection.service.mq.LogWarnf(connection.formatLogRecord(format), args...)
+	connection.service.trekt.LogWarnf(connection.formatLogRecord(format), args...)
 }
 func (connection *connection) logWarn(message string) {
-	connection.service.mq.LogWarn(connection.formatLogRecord(message))
+	connection.service.trekt.LogWarn(connection.formatLogRecord(message))
 }
 func (connection *connection) logInfof(format string, args ...interface{}) {
-	connection.service.mq.LogInfof(connection.formatLogRecord(format), args...)
+	connection.service.trekt.LogInfof(connection.formatLogRecord(format), args...)
 }
 func (connection *connection) logInfo(message string) {
-	connection.service.mq.LogInfo(connection.formatLogRecord(message))
+	connection.service.trekt.LogInfo(connection.formatLogRecord(message))
 }
 func (connection *connection) logDebugf(format string, args ...interface{}) {
-	connection.service.mq.LogDebugf(connection.formatLogRecord(format), args...)
+	connection.service.trekt.LogDebugf(
+		connection.formatLogRecord(format), args...)
 }
 func (connection *connection) logDebug(message string) {
-	connection.service.mq.LogDebug(connection.formatLogRecord(message))
+	connection.service.trekt.LogDebug(connection.formatLogRecord(message))
 }

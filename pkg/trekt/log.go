@@ -1,6 +1,6 @@
 // Copyright 2018 REKTRA Network, All Rights Reserved.
 
-package mqclient
+package trekt
 
 import (
 	"fmt"
@@ -73,14 +73,14 @@ func (exchange *LogExchange) Subscribe(
 }
 
 func (exchange *LogExchange) publishf(
-	client *Client, severity, format string, args ...interface{}) {
-	exchange.publish(client, severity, fmt.Sprintf(format, args...))
+	trekt *Trekt, severity, format string, args ...interface{}) {
+
+	exchange.publish(trekt, severity, fmt.Sprintf(format, args...))
 }
-func (exchange *LogExchange) publish(
-	client *Client, severity, message string) {
+func (exchange *LogExchange) publish(trekt *Trekt, severity, message string) {
 	log.Print(severity + ":\t" + message)
 	exchange.exchange.publish(
-		severity+"."+client.id,
+		severity+"."+trekt.id,
 		false, // mandatory
 		false, // immediate
 		amqp.Publishing{
@@ -98,6 +98,7 @@ type LogSubscription struct {
 
 func createLogSubscription(
 	query string, exchange *LogExchange) (*LogSubscription, error) {
+
 	result := &LogSubscription{}
 	err := result.subscription.init(
 		query, &exchange.exchange, true,

@@ -6,7 +6,7 @@ import (
 	"flag"
 	"log"
 
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 var (
@@ -26,7 +26,7 @@ var (
 func main() {
 	flag.Parse()
 
-	app := app{mq: mqclient.DealOrExit(*mqBroker, "cli", *name, 1)}
+	app := app{trekt: trekt.DealOrExit(*mqBroker, "cli", *name, 1)}
 	defer app.close()
 
 	if *logRequest != "" {

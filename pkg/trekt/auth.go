@@ -1,6 +1,6 @@
 // Copyright 2018 REKTRA Network, All Rights Reserved.
 
-package mqclient
+package trekt
 
 import (
 	"encoding/json"
@@ -29,16 +29,15 @@ type AuthRequest struct {
 // AuthExchange represents authorization exchange.
 type AuthExchange struct {
 	exchange
-	client *Client
+	trekt *Trekt
 }
 
-func createAuthExchange(
-	client *Client, capacity uint16) (*AuthExchange, error) {
+func createAuthExchange(trekt *Trekt, capacity uint16) (*AuthExchange, error) {
 
-	result := &AuthExchange{client: client}
+	result := &AuthExchange{trekt: trekt}
 	err := result.exchange.init(
-		"auth", "direct", result.client.conn, capacity,
-		func(message string) { result.client.LogError(message) })
+		"auth", "direct", result.trekt.conn, capacity,
+		func(message string) { result.trekt.LogError(message) })
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +60,7 @@ func (exchange *AuthExchange) CreateServer() (*AuthServer, error) {
 func (exchange *AuthExchange) CreateServerOrExit() *AuthServer {
 	result, err := exchange.CreateServer()
 	if err != nil {
-		exchange.client.LogErrorf(`Failed to create auth-server: "%s".`, err)
+		exchange.trekt.LogErrorf(`Failed to create auth-server: "%s".`, err)
 		os.Exit(1)
 	}
 	return result
@@ -77,7 +76,7 @@ func (exchange *AuthExchange) CreateService() (*AuthService, error) {
 func (exchange *AuthExchange) CreateServiceOrExit() *AuthService {
 	result, err := exchange.CreateService()
 	if err != nil {
-		exchange.client.LogErrorf(`Failed to create auth-service: "%s".`, err)
+		exchange.trekt.LogErrorf(`Failed to create auth-service: "%s".`, err)
 		os.Exit(1)
 	}
 	return result
@@ -92,7 +91,7 @@ type AuthServer struct {
 
 func createAuthServer(exchange *AuthExchange) (*AuthServer, error) {
 	result := &AuthServer{}
-	err := result.rpcServer.init("auth", &exchange.exchange, exchange.client)
+	err := result.rpcServer.init("auth", &exchange.exchange, exchange.trekt)
 	if err != nil {
 		return nil, err
 	}
@@ -107,11 +106,12 @@ func (server *AuthServer) Close() {
 // Handle accepts authorization requests and calls a handler for each.
 func (server *AuthServer) Handle(
 	handle func(login, password string) (*Auth, error)) {
+
 	server.handle(func(message amqp.Delivery) (interface{}, error) {
 		request := AuthRequest{}
 		err := json.Unmarshal(message.Body, &request)
 		if err != nil {
-			server.client.LogErrorf(`Failed to parse auth-request "%s": "%s".`,
+			server.trekt.LogErrorf(`Failed to parse auth-request "%s": "%s".`,
 				string(message.Body), err)
 			return nil, errors.New("Internal error")
 		}
@@ -119,12 +119,12 @@ func (server *AuthServer) Handle(
 		var response *Auth
 		response, err = handle(request.Login, request.Password)
 		if err != nil {
-			server.client.LogDebugf(
+			server.trekt.LogDebugf(
 				`Failed to auth login "%s": "%s".`, request.Login, err)
 			return nil, err
 		}
 
-		server.client.LogDebugf(`Login "%s" is authorized.`, request.Login)
+		server.trekt.LogDebugf(`Login "%s" is authorized.`, request.Login)
 		return response, nil
 	})
 }
@@ -139,7 +139,7 @@ type AuthService struct {
 
 func createAuthService(exchange *AuthExchange) (*AuthService, error) {
 	result := &AuthService{}
-	err := result.rpcClient.init(&exchange.exchange, exchange.client)
+	err := result.rpcClient.init(&exchange.exchange, exchange.trekt)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (service *AuthService) Request(
 			result := Auth{}
 			err := json.Unmarshal(response, &result)
 			if err != nil {
-				service.client.LogErrorf(`Failed to read response: "%s". Message: %s.`,
+				service.trekt.LogErrorf(`Failed to read response: "%s". Message: %s.`,
 					err, string(response))
 				handleFail(errors.New("Failed to read response"))
 				return

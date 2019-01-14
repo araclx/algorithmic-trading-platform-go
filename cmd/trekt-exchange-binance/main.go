@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/rektra-network/trekt-go/pkg/mqclient"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 var (
@@ -19,21 +19,21 @@ var (
 func main() {
 	flag.Parse()
 
-	mq := mqclient.DealOrExit(*mqBroker, "binance", *name, 1)
-	defer mq.Close()
+	trekt := trekt.DealOrExit(*mqBroker, "binance", *name, 1)
+	defer trekt.Close()
 
-	exchange := mq.CreateMarketDataExchangeOrExit(1)
+	exchange := trekt.CreateMarketDataExchangeOrExit(1)
 	defer exchange.Close()
 
 	exchangeInfoUpdatingStopChan := make(chan struct{})
-	go runExchangeInfoUpdating(15*time.Minute, mq, exchangeInfoUpdatingStopChan)
+	go runExchangeInfoUpdating(15*time.Minute, trekt, exchangeInfoUpdatingStopChan)
 	defer func() {
 		exchangeInfoUpdatingStopChan <- struct{}{}
 		close(exchangeInfoUpdatingStopChan)
 	}()
 
 	streamClientStopChan := make(chan struct{})
-	go runStreamClient(exchange, mq, streamClientStopChan)
+	go runStreamClient(exchange, trekt, streamClientStopChan)
 	defer func() {
 		streamClientStopChan <- struct{}{}
 		close(streamClientStopChan)

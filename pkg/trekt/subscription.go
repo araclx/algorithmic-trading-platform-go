@@ -1,6 +1,6 @@
 // Copyright 2018 REKTRA Network, All Rights Reserved.
 
-package mqclient
+package trekt
 
 import (
 	"fmt"
@@ -122,17 +122,17 @@ func (subscription *subscription) handle(handle func(amqp.Delivery)) {
 
 type clientSubscription struct {
 	subscription
-	client *Client
+	trekt *Trekt
 }
 
 func createClientSubscription(
 	query string,
 	exchange *exchange,
 	isAutoAck bool,
-	client *Client) (*clientSubscription, error) {
+	trekt *Trekt) (*clientSubscription, error) {
 
 	result := &clientSubscription{}
-	err := result.init(query, exchange, isAutoAck, client)
+	err := result.init(query, exchange, isAutoAck, trekt)
 	if err != nil {
 		return nil, err
 	}
@@ -142,12 +142,12 @@ func createClientSubscription(
 func (subscription *clientSubscription) init(query string,
 	exchange *exchange,
 	isAutoAck bool,
-	client *Client) error {
+	trekt *Trekt) error {
 
-	subscription.client = client
+	subscription.trekt = trekt
 	return subscription.subscription.init(
 		query, exchange, isAutoAck,
-		func(message string) { subscription.client.LogError(message + ".") })
+		func(message string) { subscription.trekt.LogError(message + ".") })
 }
 
 ///////////////////////////////////////////////////////////////////////////////
