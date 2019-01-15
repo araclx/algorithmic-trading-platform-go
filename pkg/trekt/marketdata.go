@@ -14,18 +14,13 @@ import (
 ///////////////////////////////////////////////////////////////////////////////
 
 // MarketDataExchange represents market data message exchange.
-type MarketDataExchange struct {
-	exchange
-	trekt *Trekt
-}
+type MarketDataExchange struct{ mqExchange }
 
 func createMarketDataExchange(
 	trekt *Trekt, capacity uint16) (*MarketDataExchange, error) {
 
-	result := &MarketDataExchange{trekt: trekt}
-	err := result.exchange.init(
-		"md", "topic", result.trekt.conn, capacity,
-		func(message string) { result.trekt.LogError(message) })
+	result := &MarketDataExchange{}
+	err := result.mqExchange.init("md", "topic", trekt, capacity)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +29,7 @@ func createMarketDataExchange(
 
 // Close closes the exchange.
 func (exchange *MarketDataExchange) Close() {
-	exchange.exchange.close()
+	exchange.mqExchange.close()
 }
 
 // CreateServer creates a market data server to handle market data requests.
@@ -71,15 +66,15 @@ type marketDataStartRequest struct {
 
 // MarketDataServer represents server which provides a market data by requests.
 type MarketDataServer struct {
-	rpcServer
+	mqRPCServer
 }
 
 func createMarketDataServer(
 	exchange *MarketDataExchange) (*MarketDataServer, error) {
 
 	result := &MarketDataServer{}
-	err := result.rpcServer.init(
-		exchange.trekt.Type+".control", &exchange.exchange, exchange.trekt)
+	err := result.mqRPCServer.init(
+		exchange.trekt.Type+".control", &exchange.mqExchange)
 	if err != nil {
 		return nil, err
 	}
@@ -88,14 +83,14 @@ func createMarketDataServer(
 
 // Close stops the server.
 func (server *MarketDataServer) Close() {
-	server.rpcServer.close()
+	server.mqRPCServer.close()
 }
 
 // Handle accepts market data requests and calls a handler for each.
 func (server *MarketDataServer) Handle(
 	handle func(securityID string, isStart bool) error) error {
 
-	channel, err := server.trekt.conn.Channel()
+	channel, err := server.exchange.trekt.mq.conn.Channel()
 	if err != nil {
 		return err
 	}
@@ -116,14 +111,14 @@ func (server *MarketDataServer) Handle(
 		if len(subscribers) == 0 {
 			return
 		}
-		server.trekt.LogDebugf(
+		server.exchange.trekt.LogDebugf(
 			"Stopping market data for %d securities"+
 				" due to the handling process is stopped.",
 			len(subscribers))
 		for securityID := range subscribers {
 			err := handle(securityID, false)
 			if err != nil {
-				server.trekt.LogErrorf(
+				server.exchange.trekt.LogErrorf(
 					`Failed to stop market data for "%d"`+
 						` by handling process is stopping: "%s".`,
 					securityID, err)
@@ -155,12 +150,12 @@ func (server *MarketDataServer) Handle(
 				if len(subscribers[securityID]) > 0 {
 					continue
 				}
-				server.trekt.LogDebugf(
+				server.exchange.trekt.LogDebugf(
 					`Stopping market data for "%d" by subscriber "%s" disconnection...`,
 					securityID, canceledQueue)
 				err := handle(securityID, false)
 				if err != nil {
-					server.trekt.LogErrorf(
+					server.exchange.trekt.LogErrorf(
 						`Failed to stop market data for "%d"`+
 							` by subscriber "%s" disconnection: "%s".`,
 						securityID, canceledQueue, err)
@@ -177,13 +172,13 @@ func (server *MarketDataServer) handle(
 		request    marketDataStartRequest
 	}) {
 
-	server.rpcServer.handle(
+	server.mqRPCServer.handle(
 		func(requestMessage amqp.Delivery) (interface{}, error) {
 
 			request := marketDataStartRequest{}
 			err := json.Unmarshal(requestMessage.Body, &request)
 			if err != nil {
-				server.trekt.LogErrorf(
+				server.exchange.trekt.LogErrorf(
 					`Failed to parse market data request "%s" from "%s": "%s".`,
 					string(requestMessage.Body), requestMessage.ReplyTo, err)
 				return nil, errors.New("Internal error")
@@ -191,7 +186,7 @@ func (server *MarketDataServer) handle(
 
 			err = handle(request.SecurityID, request.IsStart)
 			if err != nil {
-				server.trekt.LogDebugf(
+				server.exchange.trekt.LogDebugf(
 					`Failed to handle market data request "%s" from "%s": "%s".`,
 					request, requestMessage.ReplyTo, err)
 				return nil, err
@@ -202,7 +197,7 @@ func (server *MarketDataServer) handle(
 				if !request.IsStart {
 					commandName = "stopped"
 				}
-				server.trekt.LogInfof(
+				server.exchange.trekt.LogInfof(
 					`Market data for security ID "%s" is %s by request from "%s".`,
 					request.SecurityID, commandName, requestMessage.ReplyTo)
 			}
@@ -220,14 +215,12 @@ func (server *MarketDataServer) handle(
 
 // MarketDataService represents service which accepts market data requests and
 // provides market data requests by these requests.
-type MarketDataService struct {
-	rpcClient
-}
+type MarketDataService struct{ mqRPCClient }
 
 func createMarketDataService(
 	exchange *MarketDataExchange) (*MarketDataService, error) {
 	result := &MarketDataService{}
-	err := result.rpcClient.init(&exchange.exchange, exchange.trekt)
+	err := result.mqRPCClient.init(&exchange.mqExchange)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +229,7 @@ func createMarketDataService(
 
 // Close stops the service.
 func (service *MarketDataService) Close() {
-	service.rpcClient.close()
+	service.mqRPCClient.close()
 }
 
 // Start requests a market data start.
@@ -253,7 +246,7 @@ func (service *MarketDataService) Stop(
 
 func (service *MarketDataService) request(
 	security tradinglib.Security, isStart bool, handleFail func(error)) {
-	service.rpcClient.request(
+	service.mqRPCClient.request(
 		security.Exchange+".control", // routing key
 		true,                         // mandatory
 		marketDataStartRequest{SecurityID: security.ID, IsStart: isStart},

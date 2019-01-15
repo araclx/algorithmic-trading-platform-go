@@ -3,43 +3,35 @@
 package trekt
 
 import (
-	"fmt"
-
 	"github.com/streadway/amqp"
 )
 
-///////////////////////////////////////////////////////////////////////////////
-
-type subscription struct {
-	exchange    *exchange
+type mqSubscription struct {
+	exchange    *mqExchange
 	consumerTag string
-	reportError func(string)
 	queue       amqp.Queue
 	messageChan <-chan amqp.Delivery
 }
 
-func createSubscription(
+func createMqSubscription(
 	query string,
-	exchange *exchange,
-	isAutoAck bool,
-	reportError func(string)) (*subscription, error) {
+	exchange *mqExchange,
+	isAutoAck bool) (*mqSubscription, error) {
 
-	result := &subscription{}
-	err := result.init(query, exchange, isAutoAck, reportError)
+	result := &mqSubscription{}
+	err := result.init(query, exchange, isAutoAck)
 	if err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func (subscription *subscription) init(
+func (subscription *mqSubscription) init(
 	query string,
-	exchange *exchange,
-	isAutoAck bool,
-	reportError func(string)) error {
+	exchange *mqExchange,
+	isAutoAck bool) error {
 
 	subscription.exchange = exchange
-	subscription.reportError = reportError
 
 	var err error
 	subscription.queue, err = exchange.channel.QueueDeclare(
@@ -83,13 +75,13 @@ func (subscription *subscription) init(
 	return nil
 }
 
-func (subscription *subscription) close() {
+func (subscription *mqSubscription) close() {
 	if subscription.messageChan != nil {
 		err := subscription.exchange.channel.Cancel(subscription.consumerTag, false)
 		if err != nil {
-			subscription.reportError(fmt.Sprintf(
-				`Failed to cancel consumer subscription "%s": "%s"`,
-				subscription.consumerTag, err))
+			subscription.exchange.trekt.LogErrorf(
+				`Failed to cancel consumer subscription "%s": "%s".`,
+				subscription.consumerTag, err)
 		}
 		subscription.messageChan = nil
 	}
@@ -97,18 +89,18 @@ func (subscription *subscription) close() {
 	numberOfTasks, err := subscription.exchange.channel.QueueDelete(
 		subscription.queue.Name, false, false, false)
 	if err != nil {
-		subscription.reportError(
-			fmt.Sprintf(`Failed to delete subscription queue "%s": "%s"`,
-				subscription.queue.Name, err))
+		subscription.exchange.trekt.LogErrorf(
+			`Failed to delete subscription queue "%s": "%s".`,
+			subscription.queue.Name, err)
 	}
 	if numberOfTasks > 0 {
-		subscription.reportError(fmt.Sprintf(
+		subscription.exchange.trekt.LogErrorf(
 			`Queue subscription "%s" is canceled with %d unhandled items in the queue.`,
-			subscription.queue.Name, numberOfTasks))
+			subscription.queue.Name, numberOfTasks)
 	}
 }
 
-func (subscription *subscription) handle(handle func(amqp.Delivery)) {
+func (subscription *mqSubscription) handle(handle func(amqp.Delivery)) {
 	for {
 		message, isOpened := <-subscription.messageChan
 		if !isOpened {
@@ -117,37 +109,3 @@ func (subscription *subscription) handle(handle func(amqp.Delivery)) {
 		handle(message)
 	}
 }
-
-///////////////////////////////////////////////////////////////////////////////
-
-type clientSubscription struct {
-	subscription
-	trekt *Trekt
-}
-
-func createClientSubscription(
-	query string,
-	exchange *exchange,
-	isAutoAck bool,
-	trekt *Trekt) (*clientSubscription, error) {
-
-	result := &clientSubscription{}
-	err := result.init(query, exchange, isAutoAck, trekt)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-func (subscription *clientSubscription) init(query string,
-	exchange *exchange,
-	isAutoAck bool,
-	trekt *Trekt) error {
-
-	subscription.trekt = trekt
-	return subscription.subscription.init(
-		query, exchange, isAutoAck,
-		func(message string) { subscription.trekt.LogError(message + ".") })
-}
-
-///////////////////////////////////////////////////////////////////////////////

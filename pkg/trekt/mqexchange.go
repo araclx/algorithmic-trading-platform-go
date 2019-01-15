@@ -9,8 +9,9 @@ import (
 	"github.com/streadway/amqp"
 )
 
-type exchange struct {
+type mqExchange struct {
 	name         string
+	trekt        *Trekt
 	channel      *amqp.Channel
 	returnChan   chan amqp.Return
 	handlersChan chan struct {
@@ -19,18 +20,19 @@ type exchange struct {
 		handleError    func(error)
 	}
 	responseChan chan amqp.Delivery
-	reportError  func(string)
 }
 
-func (exchange *exchange) init(
-	name, kind string,
-	conn *amqp.Connection,
-	capacity uint16,
-	reportError func(string)) error {
+func (exchange *mqExchange) init(
+	name string,
+	kind string,
+	trekt *Trekt,
+	capacity uint16) error {
+
 	exchange.name = name
+	exchange.trekt = trekt
 
 	var err error
-	exchange.channel, err = conn.Channel()
+	exchange.channel, err = exchange.trekt.mq.conn.Channel()
 	if err != nil {
 		return err
 	}
@@ -58,14 +60,13 @@ func (exchange *exchange) init(
 	}, capacity)
 	exchange.responseChan = make(chan amqp.Delivery)
 
-	exchange.reportError = reportError
 
 	go exchange.runReturnsReading()
 
 	return nil
 }
 
-func (exchange *exchange) close() {
+func (exchange *mqExchange) close() {
 	if exchange.responseChan != nil {
 		close(exchange.responseChan)
 	}
@@ -75,14 +76,14 @@ func (exchange *exchange) close() {
 	closeChannel(&exchange.channel)
 }
 
-func (exchange *exchange) publish(
+func (exchange *mqExchange) publish(
 	key string, mandatory, immediate bool, message amqp.Publishing) error {
 
 	return exchange.channel.Publish(
 		exchange.name, key, mandatory, immediate, message)
 }
 
-func (exchange *exchange) runReturnsReading() {
+func (exchange *mqExchange) runReturnsReading() {
 
 	handlers := make(map[string]struct {
 		handleResponse func(amqp.Delivery)
@@ -100,10 +101,9 @@ loop:
 			handler, hasHandler := handlers[notification.CorrelationId]
 			if !hasHandler {
 				if notification.Exchange == exchange.name {
-					exchange.reportError(
-						fmt.Sprintf(
-							`Failed to request RPC on exchange "%s": "%s" (code: %d)`,
-							exchange.name, notification.ReplyText, notification.ReplyCode))
+					exchange.trekt.LogErrorf(
+						`Failed to request RPC on exchange "%s": "%s" (code: %d).`,
+						exchange.name, notification.ReplyText, notification.ReplyCode)
 				}
 				break
 			}
@@ -118,7 +118,8 @@ loop:
 			}
 			handler, hasHandler := handlers[response.CorrelationId]
 			if !hasHandler {
-				exchange.reportError("RPC-client does not have required RPC-handler")
+				exchange.trekt.LogError(
+					"RPC-client does not have required RPC-handler.")
 				break
 			}
 			delete(handlers, response.CorrelationId)

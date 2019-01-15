@@ -13,45 +13,42 @@ import (
 
 ///////////////////////////////////////////////////////////////////////////////
 
-type rpc struct {
-	exchange     *exchange
-	trekt        *Trekt
-	subscription clientSubscription
+type mqRPC struct {
+	exchange     *mqExchange
+	subscription mqSubscription
 }
 
-func (rpc *rpc) init(query string, exchange *exchange, trekt *Trekt) error {
+func (rpc *mqRPC) init(query string, exchange *mqExchange) error {
 	rpc.exchange = exchange
-	rpc.trekt = trekt
 	return rpc.subscription.init(
 		query,
 		rpc.exchange,
-		true, // is auto-ack
-		trekt)
+		true) // is auto-ack
 }
 
-func (rpc *rpc) close() {
+func (rpc *mqRPC) close() {
 	rpc.subscription.close()
 }
 
-func (rpc *rpc) getReplyName() string {
+func (rpc *mqRPC) getReplyName() string {
 	return rpc.subscription.queue.Name
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-type rpcServer struct{ rpc }
+type mqRPCServer struct{ mqRPC }
 
-func (server *rpcServer) init(
-	subscriptionQuery string, exchange *exchange, trekt *Trekt) error {
+func (server *mqRPCServer) init(
+	subscriptionQuery string, exchange *mqExchange) error {
 
-	return server.rpc.init(subscriptionQuery, exchange, trekt)
+	return server.mqRPC.init(subscriptionQuery, exchange)
 }
 
-func (server *rpcServer) close() {
-	server.rpc.close()
+func (server *mqRPCServer) close() {
+	server.mqRPC.close()
 }
 
-func (server *rpcServer) handle(
+func (server *mqRPCServer) handle(
 	handle func(amqp.Delivery) (response interface{}, err error)) {
 
 	server.subscription.handle(
@@ -73,7 +70,7 @@ func (server *rpcServer) handle(
 				false,           // immediate
 				message)
 			if err != nil {
-				server.trekt.LogErrorf(
+				server.exchange.trekt.LogErrorf(
 					`Failed to publish RPC-server response: "%s".`, err)
 			}
 		})
@@ -81,61 +78,59 @@ func (server *rpcServer) handle(
 
 ///////////////////////////////////////////////////////////////////////////////
 
-type rpcClient struct {
-	rpc
+type mqRPCClient struct {
+	mqRPC
 	requestsCond *sync.Cond
 	requests     map[string]amqp.Publishing
 }
 
-func createRPCClient(
-	exchange *exchange, trekt *Trekt) (*rpcClient, error) {
-
-	result := &rpcClient{}
-	err := result.init(exchange, trekt)
+func createMqRPCClient(exchange *mqExchange) (*mqRPCClient, error) {
+	result := &mqRPCClient{}
+	err := result.init(exchange)
 	if err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func (trekt *rpcClient) init(exchange *exchange, mqClient *Trekt) error {
+func (client *mqRPCClient) init(exchange *mqExchange) error {
 
-	err := trekt.rpc.init("", exchange, mqClient)
+	err := client.mqRPC.init("", exchange)
 	if err != nil {
 		return err
 	}
 
-	trekt.requestsCond = sync.NewCond(&sync.Mutex{})
-	trekt.requests = make(map[string]amqp.Publishing)
+	client.requestsCond = sync.NewCond(&sync.Mutex{})
+	client.requests = make(map[string]amqp.Publishing)
 
-	go trekt.subscription.handle(func(response amqp.Delivery) {
-		trekt.exchange.responseChan <- response
+	go client.subscription.handle(func(response amqp.Delivery) {
+		client.exchange.responseChan <- response
 	})
 
 	return nil
 }
 
-func (trekt *rpcClient) close() {
-	trekt.requestsCond.L.Lock()
-	for _, request := range trekt.requests {
-		trekt.exchange.responseChan <- amqp.Delivery{
+func (client *mqRPCClient) close() {
+	client.requestsCond.L.Lock()
+	for _, request := range client.requests {
+		client.exchange.responseChan <- amqp.Delivery{
 			ContentType:   "text/plain",
 			CorrelationId: request.CorrelationId,
 			ReplyTo:       request.ReplyTo,
-			Exchange:      trekt.exchange.name,
+			Exchange:      client.exchange.name,
 			Body: []byte(
 				"RPC-service is stopped, request result is unknown"),
 		}
 	}
-	for len(trekt.requests) > 0 {
-		trekt.requestsCond.Wait()
+	for len(client.requests) > 0 {
+		client.requestsCond.Wait()
 	}
-	trekt.requestsCond.L.Unlock()
+	client.requestsCond.L.Unlock()
 
-	trekt.rpc.close()
+	client.mqRPC.close()
 }
 
-func (trekt *rpcClient) request(
+func (client *mqRPCClient) request(
 	routingKey string,
 	mandatory bool,
 	request interface{},
@@ -151,21 +146,21 @@ func (trekt *rpcClient) request(
 
 	message := amqp.Publishing{
 		CorrelationId: "1234",
-		ReplyTo:       trekt.getReplyName(),
+		ReplyTo:       client.getReplyName(),
 		ContentType:   "application/json",
 		Body:          requestData}
 
-	trekt.requestsCond.L.Lock()
-	trekt.requests[message.CorrelationId] = message
-	trekt.requestsCond.L.Unlock()
+	client.requestsCond.L.Lock()
+	client.requests[message.CorrelationId] = message
+	client.requestsCond.L.Unlock()
 	reportHandling := func() {
-		trekt.requestsCond.L.Lock()
-		delete(trekt.requests, message.CorrelationId)
-		trekt.requestsCond.L.Unlock()
-		trekt.requestsCond.Broadcast()
+		client.requestsCond.L.Lock()
+		delete(client.requests, message.CorrelationId)
+		client.requestsCond.L.Unlock()
+		client.requestsCond.Broadcast()
 	}
 
-	trekt.exchange.handlersChan <- struct {
+	client.exchange.handlersChan <- struct {
 		request        amqp.Publishing
 		handleResponse func(amqp.Delivery)
 		handleError    func(error)
@@ -184,7 +179,7 @@ func (trekt *rpcClient) request(
 			reportHandling()
 		}}
 
-	err = trekt.exchange.publish(
+	err = client.exchange.publish(
 		routingKey, // routing key
 		mandatory,  // mandatory
 		false,      // immediate
@@ -195,13 +190,12 @@ func (trekt *rpcClient) request(
 			ContentType:   "text/plain",
 			CorrelationId: message.CorrelationId,
 			ReplyTo:       message.ReplyTo,
-			Exchange:      trekt.exchange.name,
+			Exchange:      client.exchange.name,
 			Body: []byte(fmt.Sprintf(`Failed to publish RPC-request: "%s"`,
 				err)),
 		}
-		trekt.trekt.LogError(string(response.Body) + ".")
-		trekt.exchange.responseChan <- response
-		return
+		client.exchange.trekt.LogError(string(response.Body) + ".")
+		client.exchange.responseChan <- response
 	}
 
 }

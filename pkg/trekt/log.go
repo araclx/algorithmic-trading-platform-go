@@ -45,15 +45,14 @@ func (message *LogMessage) GetNodeID() string {
 
 // LogExchange represents logger exchange.
 type LogExchange struct {
-	exchange
+	mqExchange
 }
 
-func createLogExchange(
-	conn *amqp.Connection, capacity uint16) (*LogExchange, error) {
+func createLogExchange(mq *mq, capacity uint16) (*LogExchange, error) {
 
 	result := &LogExchange{}
 	err := result.exchange.init(
-		"log", "topic", conn, capacity,
+		"log", "topic", mq, capacity,
 		func(message string) { fmt.Printf(`Log exchange error: "%s".`, message) })
 	if err != nil {
 		return nil, err
@@ -92,9 +91,7 @@ func (exchange *LogExchange) publish(trekt *Trekt, severity, message string) {
 ///////////////////////////////////////////////////////////////////////////////
 
 // LogSubscription represents subscription to logger data
-type LogSubscription struct {
-	subscription
-}
+type LogSubscription struct{ mqSubscription }
 
 func createLogSubscription(
 	query string, exchange *LogExchange) (*LogSubscription, error) {
