@@ -7,9 +7,11 @@ COPY . .
 
 RUN apk update
 RUN apk add git
+RUN apk add build-base
 
 RUN go get -v golang.org/x/crypto/acme/autocert
 RUN go get -v github.com/gorilla/mux
 RUN go get -v github.com/gorilla/websocket
 RUN go get -v github.com/mitchellh/mapstructure
 RUN go get -v github.com/streadway/amqp
+RUN go get -v github.com/Shopify/sarama

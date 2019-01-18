@@ -395,7 +395,7 @@ func createSecuritiesSubscription(
 	}, 1)
 	err := result.mqSubscription.init(
 		"*.update", // query
-		result.exchange,
+		&exchange.mqExchange,
 		true) // is auto-ack
 	if err != nil {
 		close(result.updatesChan)

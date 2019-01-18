@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
@@ -31,19 +32,32 @@ func (app *app) close() {
 	}
 }
 
-func (app *app) startLogListening(request string) {
+func (app *app) startLogListening() {
 	var err error
-	app.logSubscription, err = app.trekt.Log.Subscribe(request)
+	app.logSubscription, err = app.trekt.Log.Subscribe()
 	if err != nil {
 		log.Fatalf(`Failed to subscribe: "%s".`, err)
 	}
-	go app.logSubscription.Handle(
-		func(message trekt.LogMessage) {
-			log.Printf("Log event: %s\t%s: %s",
+	go func() {
+		for {
+			message, isOpened := app.logSubscription.GetNextMessage()
+			if !isOpened {
+				break
+			}
+			log.Printf("Log event %d: %d-%02d-%02d %02d:%02d:%02d.%03d\t%s\t%s: %s",
+				message.GetSequenceNumber(),
+				message.GetTime().Year(),
+				message.GetTime().Month(),
+				message.GetTime().Day(),
+				message.GetTime().Hour(),
+				message.GetTime().Minute(),
+				message.GetTime().Second(),
+				message.GetTime().Nanosecond()/int(time.Millisecond),
 				strings.ToUpper(message.GetLevel()),
 				message.GetNodeID(),
 				message.GetRecord())
-		})
+		}
+	}()
 }
 
 func (app *app) startAccessPointReading(host, path string, isUnsecured bool) {

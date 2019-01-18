@@ -6,6 +6,7 @@ import (
 	"flag"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/rektra-network/trekt-go/pkg/trekt"
@@ -13,7 +14,10 @@ import (
 )
 
 var (
-	mqBroker    = flag.String("mq_broker", "localhost", "message queuing broker")
+	mqBroker = flag.String("mq_broker",
+		"localhost", "message queuing broker")
+	streamBrokers = flag.String("stream_brokers",
+		"localhost:9092", "stream brokers, as a comma-separated list")
 	name        = flag.String("name", "", "node instance name")
 	host        = flag.String("host", "*:8443", "server host and port")
 	isUnsecured = flag.Bool("unsecured", false,
@@ -25,7 +29,8 @@ var (
 func main() {
 	flag.Parse()
 
-	trekt := trekt.DealOrExit(*mqBroker, "accesspoint", *name, uint16(*capacity))
+	trekt := trekt.DealOrExit("accesspoint",
+		*name, *mqBroker, strings.Split(*streamBrokers, ","), uint16(*capacity))
 	defer trekt.Close()
 
 	authExchange := trekt.CreateAuthExchangeOrExit(uint16(*capacity))

@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Shopify/sarama"
 	"github.com/streadway/amqp"
 )
 
@@ -18,14 +19,24 @@ type Trekt struct {
 	Type string
 	name string
 	id   string
-	Log  *LogExchange
-	mq   mq
+
+	mq     mq
+	stream stream
+
+	Log *LogExchange
 }
 
 // DealOrExit creates a new connection to TREKT or exits with error printing if
 // creating is failed.
-func DealOrExit(broker, nodeType, nodeName string, capacity uint16) *Trekt {
-	result, err := Dial(broker, nodeType, nodeName, capacity)
+func DealOrExit(
+	nodeType string,
+	nodeName string,
+	messageQueueingBroker string,
+	streamBrokers []string,
+	capacity uint16) *Trekt {
+
+	result, err := Dial(
+		nodeType, nodeName, messageQueueingBroker, streamBrokers, capacity)
 	if err != nil {
 		log.Fatalf(`Failed to connect to TREKT: "%s".`, err)
 	}
@@ -34,7 +45,11 @@ func DealOrExit(broker, nodeType, nodeName string, capacity uint16) *Trekt {
 
 // Dial creates a new a new connection to TREKT.
 func Dial(
-	mqBroker, nodeType, nodeName string, capacity uint16) (*Trekt, error) {
+	nodeType string,
+	nodeName string,
+	messageQueueingBroker string,
+	streamBrokers []string,
+	capacity uint16) (*Trekt, error) {
 
 	if nodeType == "" {
 		return nil, errors.New("Node type is empty")
@@ -49,13 +64,20 @@ func Dial(
 		id:   nodeType + "." + nodeName,
 	}
 
-	err := result.mq.init(result.id, mqBroker, "guest", "guest")
+	err := result.mq.init(result.id, messageQueueingBroker, "guest", "guest")
 	if err != nil {
 		return nil, err
 	}
 
-	result.Log, err = createLogExchange(&result.mq, capacity)
+	err = result.stream.init(streamBrokers, result.id)
 	if err != nil {
+		result.mq.close()
+		return nil, err
+	}
+
+	result.Log, err = createLogExchange(result, capacity)
+	if err != nil {
+		result.stream.close()
 		result.mq.close()
 		return nil, err
 	}
@@ -65,8 +87,7 @@ func Dial(
 		if capacity != 1 {
 			capacityStatus = fmt.Sprintf(" Capacity: %d.", capacity)
 		}
-		result.LogDebugf(`Connected to message queuing broker "%s".%s`,
-			mqBroker, capacityStatus)
+		result.LogDebugf(`Connected to TREKT.%s`, capacityStatus)
 	}
 
 	return result, nil
@@ -78,53 +99,54 @@ func (trekt *Trekt) Close() {
 		trekt.LogDebug("Closing connection to TREKT...")
 		trekt.Log.Close()
 	}
+	trekt.stream.close()
 	trekt.mq.close()
 }
 
 // LogErrorf formats and sends error message in the queue and prints to the
 // standard logger.
 func (trekt *Trekt) LogErrorf(format string, args ...interface{}) {
-	trekt.Log.publishf(trekt, "error", format, args...)
+	trekt.Log.publishf("error", format, args...)
 }
 
 // LogError sends error message in the queue and prints to the standard logger.
 func (trekt *Trekt) LogError(message string) {
-	trekt.Log.publish(trekt, "error", message)
+	trekt.Log.publish("error", message)
 }
 
 // LogWarnf formats and sends warning message in the queue and prints to the
 // standard logger.
 func (trekt *Trekt) LogWarnf(format string, args ...interface{}) {
-	trekt.Log.publishf(trekt, "warn", format, args...)
+	trekt.Log.publishf("warn", format, args...)
 }
 
 // LogWarn sends warning message in the queue and prints to the standard logger.
 func (trekt *Trekt) LogWarn(message string) {
-	trekt.Log.publish(trekt, "warn", message)
+	trekt.Log.publish("warn", message)
 }
 
 // LogInfof formats and sends information message in the queue and prints to
 // the standard logger.
 func (trekt *Trekt) LogInfof(format string, args ...interface{}) {
-	trekt.Log.publishf(trekt, "info", format, args...)
+	trekt.Log.publishf("info", format, args...)
 }
 
 // LogInfo sends information message in the queue and prints to the standard
 // logger.
 func (trekt *Trekt) LogInfo(message string) {
-	trekt.Log.publish(trekt, "info", message)
+	trekt.Log.publish("info", message)
 }
 
 // LogDebugf formats and sends debug message in the queue and prints to the
 // standard logger.
 func (trekt *Trekt) LogDebugf(format string, args ...interface{}) {
-	trekt.Log.publishf(trekt, "debug", format, args...)
+	trekt.Log.publishf("debug", format, args...)
 }
 
 // LogDebug sends debug message in the queue and prints prints to the standard
 // logger.
 func (trekt *Trekt) LogDebug(message string) {
-	trekt.Log.publish(trekt, "debug", message)
+	trekt.Log.publish("debug", message)
 }
 
 // CreateAuthExchange creates an exchange instance for authorization.
@@ -235,6 +257,34 @@ func (mq *mq) close() {
 	err := mq.conn.Close()
 	if err != nil {
 		log.Printf(`MQ-client failed to close connection: "%s".`, err)
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+type stream struct {
+	client sarama.Client
+}
+
+func (stream *stream) init(brokers []string, clientID string) error {
+
+	config := sarama.NewConfig()
+	config.ClientID = clientID
+	config.Version = sarama.V2_1_0_0
+	config.Producer.Return.Errors = true
+
+	var err error
+	stream.client, err = sarama.NewClient(brokers, config)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (stream *stream) close() {
+	log.Println("Closing stream client connection...")
+	if err := stream.client.Close(); err != nil {
+		log.Printf(`Stream client failed to close connection: "%s".`, err)
 	}
 }
 

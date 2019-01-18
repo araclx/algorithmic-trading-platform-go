@@ -60,7 +60,6 @@ func (exchange *mqExchange) init(
 	}, capacity)
 	exchange.responseChan = make(chan amqp.Delivery)
 
-
 	go exchange.runReturnsReading()
 
 	return nil

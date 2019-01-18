@@ -5,13 +5,17 @@ package main
 import (
 	"errors"
 	"flag"
+	"strings"
 
 	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 var (
-	mqBroker = flag.String("mq_broker", "localhost", "message queuing broker")
-	name     = flag.String("name", "", "node instance name")
+	mqBroker = flag.String("mq_broker",
+		"localhost", "message queuing broker")
+	streamBrokers = flag.String("stream_brokers",
+		"localhost:9092", "stream brokers, as a comma-separated list")
+	name = flag.String("name", "", "node instance name")
 )
 
 func auth(login, password string) (*trekt.Auth, error) {
@@ -24,7 +28,8 @@ func auth(login, password string) (*trekt.Auth, error) {
 func main() {
 	flag.Parse()
 
-	trekt := trekt.DealOrExit(*mqBroker, "auth", *name, 1)
+	trekt := trekt.DealOrExit("auth",
+		*name, *mqBroker, strings.Split(*streamBrokers, ","), 1)
 	defer trekt.Close()
 
 	exchange := trekt.CreateAuthExchangeOrExit(1)

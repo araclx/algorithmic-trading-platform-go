@@ -5,14 +5,18 @@ package main
 import (
 	"flag"
 	"log"
+	"strings"
 
 	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 var (
-	mqBroker        = flag.String("mq_broker", "localhost", "message queuing broker")
+	mqBroker = flag.String("mq_broker",
+		"localhost", "message queuing broker")
+	streamBrokers = flag.String("stream_brokers",
+		"localhost:9092", "stream brokers, as a comma-separated list")
 	name            = flag.String("name", "", "node instance name")
-	logRequest      = flag.String("log", "", "log request")
+	showLog         = flag.Bool("log", false, "show log network log records")
 	accessPointHost = flag.String(
 		"host", "", "address of access point to connect and test it")
 	accessPointPath = flag.String("endpoint", "/", "access point server path")
@@ -26,11 +30,12 @@ var (
 func main() {
 	flag.Parse()
 
-	app := app{trekt: trekt.DealOrExit(*mqBroker, "cli", *name, 1)}
+	app := app{trekt: trekt.DealOrExit("cli",
+		*name, *mqBroker, strings.Split(*streamBrokers, ","), 1)}
 	defer app.close()
 
-	if *logRequest != "" {
-		app.startLogListening(*logRequest)
+	if *showLog {
+		app.startLogListening()
 	}
 	if *accessPointHost != "" {
 		app.startAccessPointReading(

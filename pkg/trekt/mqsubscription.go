@@ -34,7 +34,7 @@ func (subscription *mqSubscription) init(
 	subscription.exchange = exchange
 
 	var err error
-	subscription.queue, err = exchange.channel.QueueDeclare(
+	subscription.queue, err = subscription.exchange.channel.QueueDeclare(
 		"",    // name
 		false, // durable
 		true,  // delete when unused
