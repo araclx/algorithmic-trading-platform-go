@@ -22,7 +22,8 @@ type connection struct {
 		updatesChan <-chan trekt.SecurityStateList
 	}
 
-	strandChan chan func() bool
+	readStopChan chan struct{}
+	strandChan   chan func() bool
 
 	protocol protocol
 
@@ -36,12 +37,32 @@ func createConnection(
 	instanceID uint64) *connection {
 
 	result := &connection{
-		conn:       conn,
-		service:    service,
-		instanceID: instanceID,
-		protocol:   createProtocol(),
-		user:       createUser(trekt.Auth{}),
-	}
+		conn:         conn,
+		service:      service,
+		instanceID:   instanceID,
+		protocol:     createProtocol(),
+		user:         createUser(trekt.Auth{}),
+		readStopChan: make(chan struct{}),
+		strandChan:   make(chan func() bool, 1)}
+
+	go func() {
+		defer close(result.readStopChan)
+		for {
+			_, data, err := result.conn.ReadMessage()
+			if err != nil {
+				result.logDebugf(`Failed to read data from the server: "%s".`, err)
+				break
+			}
+			if len(data) == 0 {
+				result.logDebugf("EOF is received from the connection.")
+				break
+			}
+			result.strandChan <- func() bool {
+				return result.handleClientMessages(data)
+			}
+		}
+	}()
+
 	result.logDebugf(`Connected from "%s".`, conn.RemoteAddr())
 	return result
 }
@@ -50,6 +71,8 @@ func (connection *connection) close() {
 	connection.user.close()
 	connection.protocol.close()
 	connection.conn.Close()
+	<-connection.readStopChan
+	close(connection.strandChan)
 }
 
 func (connection *connection) run() {
@@ -57,45 +80,26 @@ func (connection *connection) run() {
 		connection.protocol.authTopic(): connection.authorize,
 	}
 
-	connection.strandChan = make(chan func() bool, 1)
-	defer close(connection.strandChan)
-
-	readStopChan := make(chan struct{})
-	go func() {
-		for {
-			_, data, err := connection.conn.ReadMessage()
-			if err != nil {
-				connection.logDebugf(`Failed to read data from the server: "%s".`, err)
-				break
-			}
-			if len(data) == 0 {
-				connection.logDebugf("EOF is received from the connection.")
-				break
-			}
-			connection.strandChan <- func() bool {
-				return connection.handleClientMessages(data)
-			}
-		}
-		close(readStopChan)
-	}()
-
 	connection.writeChan = make(chan string, 1)
-	defer close(connection.writeChan)
 	writeStopChan := make(chan struct{})
+	defer func() {
+		close(connection.writeChan)
+		<-writeStopChan
+	}()
 	go func() {
+		defer close(writeStopChan)
 		for {
 			message, isOpened := <-connection.writeChan
 			if !isOpened {
-				break
+				return
 			}
 			err := connection.conn.WriteMessage(
 				websocket.TextMessage, []byte(message))
 			if err != nil {
 				connection.logDebugf(`Failed to send message: "%s".`, err)
-				break
+				return
 			}
 		}
-		close(writeStopChan)
 	}()
 
 	defer func() {
@@ -116,7 +120,7 @@ func (connection *connection) run() {
 				return
 			}
 			connection.send(connection.protocol.securityList(update))
-		case <-readStopChan:
+		case <-connection.readStopChan:
 			return
 		case <-writeStopChan:
 			return
