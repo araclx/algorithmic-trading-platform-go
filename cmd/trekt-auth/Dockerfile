@@ -3,6 +3,7 @@ ARG NODE_OS_TAG
 ARG BUILDER
 
 FROM ${BUILDER} as builder
+RUN go test -timeout 10s ./cmd/trekt-auth -v
 RUN go install -v ./cmd/trekt-auth
 
 FROM ${NODE_OS_NAME}:${NODE_OS_TAG}

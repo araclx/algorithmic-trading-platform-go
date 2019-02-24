@@ -27,12 +27,16 @@ type AuthRequest struct {
 ///////////////////////////////////////////////////////////////////////////////
 
 // AuthExchange represents authorization exchange.
-type AuthExchange struct{ mqExchange }
+type AuthExchange struct {
+	trekt Trekt
+	mqChannel
+}
 
-func createAuthExchange(trekt *Trekt, capacity uint16) (*AuthExchange, error) {
+func createAuthExchange(
+	trekt Trekt, mq *Mq, capacity uint16) (*AuthExchange, error) {
 
 	result := &AuthExchange{}
-	err := result.mqExchange.init("auth", "direct", trekt, capacity)
+	err := result.mqChannel.init("auth", "direct", trekt, mq, capacity)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +45,7 @@ func createAuthExchange(trekt *Trekt, capacity uint16) (*AuthExchange, error) {
 
 // Close closes the exchange.
 func (exchange *AuthExchange) Close() {
-	exchange.mqExchange.close()
+	exchange.mqChannel.Close()
 }
 
 // CreateServer creates an authorization server to handle user authorization
@@ -82,11 +86,12 @@ func (exchange *AuthExchange) CreateServiceOrExit() *AuthService {
 // AuthServer represents server which handles authorization requests.
 type AuthServer struct {
 	mqRPCServer
+	trekt Trekt
 }
 
 func createAuthServer(exchange *AuthExchange) (*AuthServer, error) {
-	result := &AuthServer{}
-	err := result.mqRPCServer.init("auth", &exchange.mqExchange)
+	result := &AuthServer{trekt: exchange.trekt}
+	err := result.mqRPCServer.init("auth", &exchange.mqChannel, result.trekt)
 	if err != nil {
 		return nil, err
 	}
@@ -106,21 +111,20 @@ func (server *AuthServer) Handle(
 		request := AuthRequest{}
 		err := json.Unmarshal(message.Body, &request)
 		if err != nil {
-			server.exchange.trekt.LogErrorf(
-				`Failed to parse auth-request "%s": "%s".`,
-				string(message.Body), err)
+			server.trekt.LogErrorf(
+				`Failed to parse auth-request "%s": "%s".`, string(message.Body), err)
 			return nil, errors.New("Internal error")
 		}
 
 		var response *Auth
 		response, err = handle(request.Login, request.Password)
 		if err != nil {
-			server.exchange.trekt.LogDebugf(
-				`Failed to auth login "%s": "%s".`, request.Login, err)
+			server.trekt.LogDebugf(`Failed to auth login "%s": "%s".`,
+				request.Login, err)
 			return nil, err
 		}
 
-		server.exchange.trekt.LogDebugf(`Login "%s" is authorized.`, request.Login)
+		server.trekt.LogDebugf(`Login "%s" is authorized.`, request.Login)
 		return response, nil
 	})
 }
@@ -129,11 +133,14 @@ func (server *AuthServer) Handle(
 
 // AuthService represents service which accepts authorization requests and
 // returns authorization result.
-type AuthService struct{ mqRPCClient }
+type AuthService struct {
+	trekt Trekt
+	mqRPCClient
+}
 
 func createAuthService(exchange *AuthExchange) (*AuthService, error) {
-	result := &AuthService{}
-	err := result.mqRPCClient.init(&exchange.mqExchange)
+	result := &AuthService{trekt: exchange.trekt}
+	err := result.mqRPCClient.init(&exchange.mqChannel, result.trekt)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +156,7 @@ func (service *AuthService) Close() {
 func (service *AuthService) Request(
 	request AuthRequest,
 	handleSuccess func(Auth), handleFail func(error)) {
-	service.mqRPCClient.request(
+	service.mqRPCClient.Request(
 		"auth", // key
 		true,   // mandatory
 		request,
@@ -157,7 +164,7 @@ func (service *AuthService) Request(
 			result := Auth{}
 			err := json.Unmarshal(response, &result)
 			if err != nil {
-				service.exchange.trekt.LogErrorf(
+				service.trekt.LogErrorf(
 					`Failed to read response: "%s". Message: %s.`,
 					err, string(response))
 				handleFail(errors.New("Failed to read response"))

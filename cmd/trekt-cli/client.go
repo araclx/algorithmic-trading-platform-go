@@ -25,7 +25,7 @@ func createClient(url url.URL) *client {
 	log.Printf(`Connected to the access point "%s".`, url.String())
 	return &client{
 		conn:     conn,
-		dataChan: make(chan string, 10000),
+		dataChan: make(chan string, 1),
 	}
 }
 
@@ -55,9 +55,11 @@ func (client *client) run() {
 				return
 			}
 			if *printMessages {
-				fmt.Println("== Access point message begin: =================================================")
+				fmt.Println(
+					"== Access point message begin: =================================================")
 				fmt.Println(string(data))
-				fmt.Println("== Access point message end. ===================================================")
+				fmt.Println(
+					"== Access point message end. ===================================================")
 			}
 			var messages []map[string]interface{}
 			err = json.Unmarshal(data, &messages)
@@ -95,8 +97,55 @@ func (client *client) run() {
 
 func (client *client) handleServerTopic(topic string, data interface{}) {
 	switch topic {
+
 	case "auth":
 		log.Println("Authorized, requesting securities info...")
-		client.dataChan <- `{"securities":[]}`
+		client.dataChan <- `{"securities":{}}`
+
+	case "securities":
+		log.Println("Security list received.")
+		client.handleSecurityList(data)
+		break
+	}
+}
+
+func (client *client) handleSecurityList(data interface{}) {
+
+	exchanges, isOk := data.(map[string]interface{})
+	if !isOk {
+		log.Printf(`Failed to parse security list: "%s".`, data)
+		return
+	}
+
+	for exchange, securities := range exchanges {
+		security, isOk := securities.(map[string]interface{})
+		if !isOk {
+			log.Printf(`Failed to parse security: "%s".`, securities)
+			return
+		}
+
+		for id, securityInterface := range security {
+			securityData, isOk :=
+				securityInterface.(map[string]interface{})
+			if !isOk {
+				log.Printf(`Failed to parse security data: "%s".`, securities)
+				return
+			}
+
+			symbol, isOk := securityData["name"].(string)
+			if !isOk {
+				log.Printf(`Failed to parse security name: "%s".`, securities)
+				return
+			}
+
+			if symbol == "BTC/USDT" {
+				log.Printf(
+					`Requesting "%s" depth of market start...`, symbol)
+				client.dataChan <- fmt.Sprintf(`{"dom":{"%s":["%s"]}}`,
+					exchange,
+					id)
+			}
+
+		}
 	}
 }

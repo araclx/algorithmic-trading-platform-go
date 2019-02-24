@@ -7,27 +7,29 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rektra-network/trekt-go/pkg/trekt"
 	"github.com/rektra-network/trekt-go/pkg/tradinglib"
+	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
 
-type message struct{ topics []string }
+// Message represents serialized message.
+type Message struct{ topics []string }
 
-func (message *message) export() string {
+// Export returns serializes string.
+func (message Message) Export() string {
 	return "[" + strings.Join(message.topics, ",") + "]"
 }
 
-func createEmptyMessage() message {
-	return message{topics: []string{}}
+func createEmptyMessage() Message {
+	return Message{topics: []string{}}
 }
 
-func createMessage(topic, data string) message {
-	return message{topics: []string{createMessageTopic(topic, data)}}
+func createMessage(topic, data string) Message {
+	return Message{topics: []string{createMessageTopic(topic, data)}}
 }
 
-func (message *message) append(topic, data string) {
+func (message *Message) append(topic, data string) {
 	message.topics = append(message.topics, createMessageTopic(topic, data))
 }
 
@@ -38,19 +40,24 @@ func createMessageTopic(topic, data string) string {
 ///////////////////////////////////////////////////////////////////////////////
 
 type protocolCache struct {
-	exchanges map[string]struct{}
+	exchanges map[string]interface{}
 }
 
-type protocol struct {
+// Protocol encapsulates messages serialization.
+type Protocol struct {
 	cache protocolCache
 }
 
-func createProtocol() protocol {
-	return protocol{cache: protocolCache{exchanges: make(map[string]struct{})}}
+// CreateProtocol creates protocol object.
+func CreateProtocol() Protocol {
+	return Protocol{cache: protocolCache{
+		exchanges: make(map[string]interface{})}}
 }
-func (*protocol) close() {}
 
-func (*protocol) parse(source []byte) (map[string]interface{}, error) {
+// Close cleanups protocol object.
+func (Protocol) Close() {}
+
+func (Protocol) parse(source []byte) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := json.Unmarshal(source, &result)
 	if err != nil {
@@ -59,24 +66,22 @@ func (*protocol) parse(source []byte) (map[string]interface{}, error) {
 	return result, nil
 }
 
-func (*protocol) error(errorMessage string) message {
+func (Protocol) error(errorMessage string) Message {
 	return createMessage("error", errorMessage)
 }
 
-func (*protocol) authTopic() string { return "auth" }
-func (protocol *protocol) authSuccess() message {
+func (Protocol) authTopic() string { return "auth" }
+func (protocol Protocol) authSuccess() Message {
 	return createMessage(protocol.authTopic(), "true")
 }
-func (protocol *protocol) authFail() message {
+func (protocol Protocol) authFail() Message {
 	return createMessage(protocol.authTopic(), "false")
 }
 
-func (*protocol) securityListTopic() string {
-	return "securities"
-}
+func (Protocol) securityListTopic() string { return "securities" }
 
-func (protocol *protocol) securityList(
-	list trekt.SecurityStateList) message {
+func (protocol Protocol) securityList(
+	list trekt.SecurityStateList) Message {
 
 	exchanges := []string{}
 	securities := map[string]*[]string{}
@@ -94,7 +99,7 @@ func (protocol *protocol) securityList(
 		}
 
 		if _, has := protocol.cache.exchanges[security.Security.Exchange]; !has {
-			protocol.cache.exchanges[security.Security.Exchange] = struct{}{}
+			protocol.cache.exchanges[security.Security.Exchange] = nil
 			name := security.Security.Exchange
 			if security.Security.Exchange == "binance" {
 				name = "Binance"
@@ -155,6 +160,28 @@ func createCurrencyPairSpecificMessagePart(
 	pair := symbol.(*tradinglib.CurrencyPairSymbol)
 	return `"base":"` + pair.GetBaseCurrency() +
 		`","quote":"` + pair.GetQuoteCurrency() + `"`
+}
+
+func (Protocol) depthOfMarketTopic() string { return "dom" }
+
+// DepthOfMarket serializes depth of market update.
+func (protocol Protocol) DepthOfMarket(
+	source trekt.DepthOfMarketUpdate) Message {
+
+	result := `[["` + source.Security.Exchange + `","` + source.Security.ID + `"]`
+	for _, level := range source.Levels {
+		if !level.IsDeleted() {
+			format := fmt.Sprintf(",[%%.%df,%%.%df]",
+				source.Security.PricePrecision,
+				source.Security.QtyPrecision)
+			result += fmt.Sprintf(format, level.GetPrice(), level.GetQty())
+		} else {
+			format := fmt.Sprintf(",[%%.%df]", source.Security.PricePrecision)
+			result += fmt.Sprintf(format, level.GetPrice())
+		}
+	}
+	result += "]"
+	return createMessage(protocol.depthOfMarketTopic(), result)
 }
 
 ///////////////////////////////////////////////////////////////////////////////

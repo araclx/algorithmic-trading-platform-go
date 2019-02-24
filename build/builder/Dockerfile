@@ -15,3 +15,11 @@ RUN go get -v github.com/gorilla/websocket
 RUN go get -v github.com/mitchellh/mapstructure
 RUN go get -v github.com/streadway/amqp
 RUN go get -v github.com/Shopify/sarama
+
+RUN go get -v github.com/golang/mock/gomock
+RUN go get -v github.com/golang/mock/mockgen
+RUN make mock
+RUN go test -timeout 15s \
+  ./pkg/trekt \
+  ./pkg/tradinglib \
+  -v

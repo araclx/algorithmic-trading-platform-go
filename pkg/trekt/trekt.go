@@ -7,23 +7,77 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"github.com/Shopify/sarama"
-	"github.com/streadway/amqp"
 )
 
-///////////////////////////////////////////////////////////////////////////////
-
 // Trekt manages the messages sending and receiving.
-type Trekt struct {
-	Type string
-	name string
-	id   string
+type Trekt interface {
+	// Close closes the connection to TREKT.
+	Close()
 
-	mq     mq
-	stream stream
+	// GetTypeName returns node type name.
+	GetTypeName() string
+	// GetID returns node ID.
+	GetID() string
 
-	Log *LogExchange
+	// GetLogExchange returns log exchange.
+	GetLogExchange() *LogExchange
+	// LogErrorf formats and sends error message in the queue and prints to the
+	// standard logger.
+	LogErrorf(format string, args ...interface{})
+	// LogError sends error message in the queue and prints to the standard
+	// logger.
+	LogError(message string)
+	// LogWarnf formats and sends warning message in the queue and prints to the
+	// standard logger.
+	LogWarnf(format string, args ...interface{})
+	// LogWarn sends warning message in the queue and prints to the standard
+	// logger.
+	LogWarn(message string)
+	// LogInfof formats and sends information message in the queue and prints to
+	// the standard logger.
+	LogInfof(format string, args ...interface{})
+	// LogInfo sends information message in the queue and prints to the standard
+	// logger.
+	LogInfo(message string)
+	// LogDebugf formats and sends debug message in the queue and prints to the
+	// standard logger.
+	LogDebugf(format string, args ...interface{})
+	// LogDebug sends debug message in the queue and prints prints to the
+	// standard logger.
+	LogDebug(message string)
+
+	// CreateAuthExchange creates an exchange instance for authorization.
+	CreateAuthExchange(capacity uint16) (*AuthExchange, error)
+	// CreateAuthExchangeOrExit creates an exchange instance for authorization
+	// or exits with error printing if creating is failed.
+	CreateAuthExchangeOrExit(capacity uint16) *AuthExchange
+
+	// CreateSecuritiesExchange creates an exchange instance for securities.
+	CreateSecuritiesExchange(capacity uint16) (*SecuritiesExchange, error)
+
+	// CreateSecuritiesExchangeOrExit creates an exchange instance for securities
+	// or exits with error printing if creating is failed.
+	CreateSecuritiesExchangeOrExit(capacity uint16) *SecuritiesExchange
+
+	// CreateMarketDataExchange creates an exchange instance for market data.
+	CreateMarketDataExchange(capacity uint16) (MarketDataExchange, error)
+	// CreateMarketDataExchangeOrExit creates an exchange instance for market
+	// data or exits with error printing if creating is failed.
+	CreateMarketDataExchangeOrExit(capacity uint16) MarketDataExchange
+
+	// CreateTicker starts new ticker.
+	CreateTicker(duration time.Duration) Ticker
+}
+
+type trekt struct {
+	typeName string
+	name     string
+	id       string
+
+	mq     Mq
+	stream Stream
+
+	log *LogExchange
 }
 
 // DealOrExit creates a new connection to TREKT or exits with error printing if
@@ -33,7 +87,7 @@ func DealOrExit(
 	nodeName string,
 	messageQueueingBroker string,
 	streamBrokers []string,
-	capacity uint16) *Trekt {
+	capacity uint16) Trekt {
 
 	result, err := Dial(
 		nodeType, nodeName, messageQueueingBroker, streamBrokers, capacity)
@@ -45,23 +99,23 @@ func DealOrExit(
 
 // Dial creates a new a new connection to TREKT.
 func Dial(
-	nodeType string,
+	nodeTypeName string,
 	nodeName string,
 	messageQueueingBroker string,
 	streamBrokers []string,
-	capacity uint16) (*Trekt, error) {
+	capacity uint16) (Trekt, error) {
 
-	if nodeType == "" {
-		return nil, errors.New("Node type is empty")
+	if nodeTypeName == "" {
+		return nil, errors.New("Node type name is empty")
 	}
 	if nodeName == "" {
 		return nil, errors.New("Node name is empty")
 	}
 
-	result := &Trekt{
-		Type: nodeType,
-		name: nodeName,
-		id:   nodeType + "." + nodeName,
+	result := &trekt{
+		typeName: nodeTypeName,
+		name:     nodeName,
+		id:       nodeTypeName + "." + nodeName,
 	}
 
 	err := result.mq.init(result.id, messageQueueingBroker, "guest", "guest")
@@ -75,7 +129,7 @@ func Dial(
 		return nil, err
 	}
 
-	result.Log, err = createLogExchange(result, capacity)
+	result.log, err = createLogExchange(result, &result.stream, capacity)
 	if err != nil {
 		result.stream.close()
 		result.mq.close()
@@ -93,199 +147,106 @@ func Dial(
 	return result, nil
 }
 
-// Close closes the connection to TREKT.
-func (trekt *Trekt) Close() {
-	if trekt.Log != nil {
+func (trekt *trekt) Close() {
+	if trekt.log != nil {
 		trekt.LogDebug("Closing connection to TREKT...")
-		trekt.Log.Close()
+		trekt.log.Close()
 	}
 	trekt.stream.close()
 	trekt.mq.close()
 }
 
-// LogErrorf formats and sends error message in the queue and prints to the
-// standard logger.
-func (trekt *Trekt) LogErrorf(format string, args ...interface{}) {
-	trekt.Log.publishf("error", format, args...)
+func (trekt *trekt) GetTypeName() string { return trekt.typeName }
+func (trekt *trekt) GetID() string       { return trekt.id }
+
+func (trekt *trekt) GetLogExchange() *LogExchange { return trekt.log }
+
+func (trekt *trekt) LogErrorf(format string, args ...interface{}) {
+	trekt.log.publishf("error", format, args...)
 }
 
-// LogError sends error message in the queue and prints to the standard logger.
-func (trekt *Trekt) LogError(message string) {
-	trekt.Log.publish("error", message)
+func (trekt *trekt) LogError(message string) {
+	trekt.log.publish("error", message)
 }
 
-// LogWarnf formats and sends warning message in the queue and prints to the
-// standard logger.
-func (trekt *Trekt) LogWarnf(format string, args ...interface{}) {
-	trekt.Log.publishf("warn", format, args...)
+func (trekt *trekt) LogWarnf(format string, args ...interface{}) {
+	trekt.log.publishf("warn", format, args...)
 }
 
-// LogWarn sends warning message in the queue and prints to the standard logger.
-func (trekt *Trekt) LogWarn(message string) {
-	trekt.Log.publish("warn", message)
+func (trekt *trekt) LogWarn(message string) {
+	trekt.log.publish("warn", message)
 }
 
-// LogInfof formats and sends information message in the queue and prints to
-// the standard logger.
-func (trekt *Trekt) LogInfof(format string, args ...interface{}) {
-	trekt.Log.publishf("info", format, args...)
+func (trekt *trekt) LogInfof(format string, args ...interface{}) {
+	trekt.log.publishf("info", format, args...)
 }
 
-// LogInfo sends information message in the queue and prints to the standard
-// logger.
-func (trekt *Trekt) LogInfo(message string) {
-	trekt.Log.publish("info", message)
+func (trekt *trekt) LogInfo(message string) {
+	trekt.log.publish("info", message)
 }
 
-// LogDebugf formats and sends debug message in the queue and prints to the
-// standard logger.
-func (trekt *Trekt) LogDebugf(format string, args ...interface{}) {
-	trekt.Log.publishf("debug", format, args...)
+func (trekt *trekt) LogDebugf(format string, args ...interface{}) {
+	trekt.log.publishf("debug", format, args...)
 }
 
-// LogDebug sends debug message in the queue and prints prints to the standard
-// logger.
-func (trekt *Trekt) LogDebug(message string) {
-	trekt.Log.publish("debug", message)
+func (trekt *trekt) LogDebug(message string) {
+	trekt.log.publish("debug", message)
 }
 
-// CreateAuthExchange creates an exchange instance for authorization.
-func (trekt *Trekt) CreateAuthExchange(
+func (trekt *trekt) CreateAuthExchange(
 	capacity uint16) (*AuthExchange, error) {
 
-	return createAuthExchange(trekt, capacity)
+	return createAuthExchange(trekt, &trekt.mq, capacity)
 }
 
-// CreateAuthExchangeOrExit creates an exchange instance for authorization
-// or exits with error printing if creating is failed.
-func (trekt *Trekt) CreateAuthExchangeOrExit(
+func (trekt *trekt) CreateAuthExchangeOrExit(
 	capacity uint16) *AuthExchange {
 
 	result, err := trekt.CreateAuthExchange(capacity)
 	if err != nil {
+		trekt.LogErrorf(`Failed to create auth-exchange: "%s".`, err)
 		log.Fatalf(`Failed to create auth-exchange: "%s".`, err)
 	}
 	return result
 }
 
-// CreateSecuritiesExchange creates an exchange instance for securities.
-func (trekt *Trekt) CreateSecuritiesExchange(
+func (trekt *trekt) CreateSecuritiesExchange(
 	capacity uint16) (*SecuritiesExchange, error) {
 
-	return createSecuritiesExchange(trekt, capacity)
+	return createSecuritiesExchange(trekt, &trekt.mq, capacity)
 }
 
-// CreateSecuritiesExchangeOrExit creates an exchange instance for securities
-// or exits with error printing if creating is failed.
-func (trekt *Trekt) CreateSecuritiesExchangeOrExit(
+func (trekt *trekt) CreateSecuritiesExchangeOrExit(
 	capacity uint16) *SecuritiesExchange {
 
 	result, err := trekt.CreateSecuritiesExchange(capacity)
 	if err != nil {
+		trekt.LogErrorf(`Failed to create securities exchange: "%s".`, err)
 		log.Fatalf(`Failed to create securities exchange: "%s".`, err)
 	}
 	return result
 }
 
-// CreateMarketDataExchange creates an exchange instance for market data.
-func (trekt *Trekt) CreateMarketDataExchange(
-	capacity uint16) (*MarketDataExchange, error) {
+func (trekt *trekt) CreateMarketDataExchange(
+	capacity uint16) (MarketDataExchange, error) {
 
-	return createMarketDataExchange(trekt, capacity)
+	return createMarketDataExchange(trekt, &trekt.mq, &trekt.stream, capacity)
 }
 
-// CreateMarketDataExchangeOrExit creates an exchange instance for market data
-// or exits with error printing if creating is failed.
-func (trekt *Trekt) CreateMarketDataExchangeOrExit(
-	capacity uint16) *MarketDataExchange {
+func (trekt *trekt) CreateMarketDataExchangeOrExit(
+	capacity uint16) MarketDataExchange {
 
 	result, err := trekt.CreateMarketDataExchange(capacity)
 	if err != nil {
+		trekt.LogErrorf(`Failed to create MD-exchange: "%s".`, err)
 		log.Fatalf(`Failed to create MD-exchange: "%s".`, err)
 	}
 	return result
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-type mq struct {
-	conn          *amqp.Connection
-	directChannel *amqp.Channel
-	directQueue   amqp.Queue
+func (trekt trekt) CreateTicker(duration time.Duration) Ticker {
+	return &ticker{ticker: time.NewTicker(duration)}
 }
 
-func (mq *mq) init(id, broker, login, password string) error {
-
-	var err error
-	for {
-		mq.conn, err = amqp.Dial(
-			fmt.Sprintf("amqp://%s:%s@%s:5672/", login, password, broker))
-		if err == nil {
-			break
-		}
-		log.Printf(`Failed to connect to the message queuing broker "%s".`,
-			fmt.Sprintf("amqp://%s@%s:5672/", login, broker))
-		time.Sleep(5 * time.Second)
-	}
-
-	mq.directChannel, err = mq.conn.Channel()
-	if err != nil {
-		mq.conn.Close()
-		return err
-	}
-	mq.directQueue, err = mq.directChannel.QueueDeclare(
-		"direct."+id,
-		false, // durable
-		true,  // delete when unused
-		true,  // exclusive
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		err = fmt.Errorf(`Failed to start unique node: "%s"`, err)
-		closeChannel(&mq.directChannel)
-		mq.conn.Close()
-		return err
-	}
-
-	return nil
-}
-
-func (mq *mq) close() {
-	log.Println("Closing MQ-client connection...")
-	closeChannel(&mq.directChannel)
-	err := mq.conn.Close()
-	if err != nil {
-		log.Printf(`MQ-client failed to close connection: "%s".`, err)
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-type stream struct {
-	client sarama.Client
-}
-
-func (stream *stream) init(brokers []string, clientID string) error {
-
-	config := sarama.NewConfig()
-	config.ClientID = clientID
-	config.Version = sarama.V2_1_0_0
-	config.Producer.Return.Errors = true
-
-	var err error
-	stream.client, err = sarama.NewClient(brokers, config)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (stream *stream) close() {
-	log.Println("Closing stream client connection...")
-	if err := stream.client.Close(); err != nil {
-		log.Printf(`Stream client failed to close connection: "%s".`, err)
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////
+func (trekt *trekt) getMq() *Mq         { return &trekt.mq }
+func (trekt *trekt) getStream() *Stream { return &trekt.stream }

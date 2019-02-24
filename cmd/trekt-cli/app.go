@@ -12,7 +12,7 @@ import (
 )
 
 type app struct {
-	trekt           *trekt.Trekt
+	trekt           trekt.Trekt
 	logSubscription *trekt.LogSubscription
 	client          *client
 }
@@ -34,7 +34,7 @@ func (app *app) close() {
 
 func (app *app) startLogListening() {
 	var err error
-	app.logSubscription, err = app.trekt.Log.Subscribe()
+	app.logSubscription, err = app.trekt.GetLogExchange().Subscribe()
 	if err != nil {
 		log.Fatalf(`Failed to subscribe: "%s".`, err)
 	}

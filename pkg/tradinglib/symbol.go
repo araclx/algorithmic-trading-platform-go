@@ -4,6 +4,7 @@ package tradinglib
 
 import "fmt"
 
+// SymbolTypeCurrencyPair is a currency pair type.
 const SymbolTypeCurrencyPair = "currencyPair"
 
 // Symbol describes symbol of a trading instrument.

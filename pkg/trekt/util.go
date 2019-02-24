@@ -7,9 +7,25 @@ import (
 	"os"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/streadway/amqp"
 )
+
+///////////////////////////////////////////////////////////////////////////////
+
+// Ticker represents time ticker interface.
+type Ticker interface {
+	Stop()
+	GetChan() <-chan time.Time
+}
+
+type ticker struct {
+	ticker *time.Ticker
+}
+
+func (ticker *ticker) Stop()                     { ticker.ticker.Stop() }
+func (ticker *ticker) GetChan() <-chan time.Time { return ticker.ticker.C }
 
 ///////////////////////////////////////////////////////////////////////////////
 

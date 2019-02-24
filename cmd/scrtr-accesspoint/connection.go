@@ -4,10 +4,12 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 
+	"github.com/rektra-network/trekt-go/pkg/tradinglib"
+
 	"github.com/gorilla/websocket"
-	"github.com/mitchellh/mapstructure"
 	"github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
@@ -16,16 +18,17 @@ type connection struct {
 	service    *service
 	instanceID uint64
 
-	writeChan              chan string
+	strandChan chan func() bool
+	writeChan  chan string
+
 	securitiesSubscription struct {
 		id          trekt.SecuritiesSubscriptionNotificationID
 		updatesChan <-chan trekt.SecurityStateList
+		securities  map[string]*map[string]tradinglib.Security
 	}
+	depthOfMarketUpdatesChan chan trekt.DepthOfMarketUpdate
 
-	readStopChan chan struct{}
-	strandChan   chan func() bool
-
-	protocol protocol
+	protocol Protocol
 
 	isLogged int32
 	user     user
@@ -37,57 +40,65 @@ func createConnection(
 	instanceID uint64) *connection {
 
 	result := &connection{
-		conn:         conn,
-		service:      service,
-		instanceID:   instanceID,
-		protocol:     createProtocol(),
-		user:         createUser(trekt.Auth{}),
-		readStopChan: make(chan struct{}),
-		strandChan:   make(chan func() bool, 1)}
-
-	go func() {
-		defer close(result.readStopChan)
-		for {
-			_, data, err := result.conn.ReadMessage()
-			if err != nil {
-				result.logDebugf(`Failed to read data from the server: "%s".`, err)
-				break
-			}
-			if len(data) == 0 {
-				result.logDebugf("EOF is received from the connection.")
-				break
-			}
-			result.strandChan <- func() bool {
-				return result.handleClientMessages(data)
-			}
-		}
-	}()
-
+		conn:       conn,
+		service:    service,
+		instanceID: instanceID,
+		protocol:   CreateProtocol()}
 	result.logDebugf(`Connected from "%s".`, conn.RemoteAddr())
 	return result
 }
 
 func (connection *connection) close() {
-	connection.user.close()
-	connection.protocol.close()
-	connection.conn.Close()
-	<-connection.readStopChan
-	close(connection.strandChan)
+	connection.protocol.Close()
+	if connection.conn != nil {
+		connection.conn.Close()
+	}
 }
 
 func (connection *connection) run() {
-	connection.user.methods = map[string]func(string, interface{}) bool{
-		connection.protocol.authTopic(): connection.authorize,
-	}
+	connection.strandChan = make(chan func() bool, 1)
+	defer close(connection.strandChan)
+
+	stopChan := make(chan interface{}, 1)
+	defer close(stopChan)
+
+	stopBarrier := sync.WaitGroup{}
+	defer stopBarrier.Wait()
+
+	defer func() {
+		connection.conn.Close()
+		connection.conn = nil
+	}()
+	stopBarrier.Add(1)
+	go func() {
+		defer func() {
+			stopChan <- nil
+			stopBarrier.Done()
+		}()
+		for {
+			_, data, err := connection.conn.ReadMessage()
+			if err != nil {
+				connection.logDebugf(`Failed to read data from the server: "%s".`, err)
+				break
+			}
+			if len(data) == 0 {
+				connection.logDebugf("EOF is received from the connection.")
+				break
+			}
+			connection.strandChan <- func() bool {
+				return connection.handleClientMessages(data)
+			}
+		}
+	}()
 
 	connection.writeChan = make(chan string, 1)
-	writeStopChan := make(chan struct{})
-	defer func() {
-		close(connection.writeChan)
-		<-writeStopChan
-	}()
+	defer close(connection.writeChan)
+	stopBarrier.Add(1)
 	go func() {
-		defer close(writeStopChan)
+		defer func() {
+			stopChan <- nil
+			stopBarrier.Done()
+		}()
 		for {
 			message, isOpened := <-connection.writeChan
 			if !isOpened {
@@ -107,7 +118,18 @@ func (connection *connection) run() {
 			connection.service.securities.CloseNotification(
 				connection.securitiesSubscription.id)
 		}
+		if connection.depthOfMarketUpdatesChan != nil {
+			close(connection.depthOfMarketUpdatesChan)
+		}
 	}()
+
+	connection.securitiesSubscription.securities =
+		map[string]*map[string]tradinglib.Security{}
+
+	connection.user = createUser(trekt.Auth{})
+	defer connection.user.close()
+	connection.user.methods[connection.protocol.authTopic()] =
+		connection.authorize
 
 	for {
 		select {
@@ -119,17 +141,20 @@ func (connection *connection) run() {
 			if !isOpened {
 				return
 			}
-			connection.send(connection.protocol.securityList(update))
-		case <-connection.readStopChan:
-			return
-		case <-writeStopChan:
+			connection.updateSecurities(update)
+		case update, isOpened := <-connection.depthOfMarketUpdatesChan:
+			if !isOpened {
+				return
+			}
+			connection.send(connection.protocol.DepthOfMarket(update))
+		case <-stopChan:
 			return
 		}
 	}
 }
 
-func (connection *connection) send(message message) {
-	connection.writeChan <- message.export()
+func (connection *connection) send(message Message) {
+	connection.writeChan <- message.Export()
 }
 
 func (connection *connection) handleClientMessages(data []byte) bool {
@@ -160,58 +185,6 @@ func (connection *connection) handleClientMessages(data []byte) bool {
 	return true
 }
 
-func (connection *connection) authorize(topic string, data interface{}) bool {
-	delete(connection.user.methods, topic)
-	request := trekt.AuthRequest{}
-	err := mapstructure.Decode(data, &request)
-	if err != nil {
-		connection.logWarnf(
-			`Received authorize-request in the wrong format "%s": "%s".`,
-			data, err)
-		return false
-	}
-
-	connection.logDebugf(`Authorizing with login "%s"...`, request.Login)
-	connection.service.auth.Request(
-		request,
-		func(auth trekt.Auth) {
-			connection.strandChan <- func() bool {
-				if !connection.initUser(auth) {
-					connection.send(connection.protocol.error("Internal error."))
-					return false
-				}
-				atomic.AddInt32(&connection.isLogged, 1)
-				connection.logInfof(`Successfully authorized with login "%s".`,
-					request.Login)
-				connection.send(connection.protocol.authSuccess())
-				return true
-			}
-		},
-		func(err error) {
-			connection.logInfof(`Failed to authorize with login "%s": "%s".`,
-				request.Login, err)
-			connection.send(connection.protocol.authFail())
-			connection.strandChan <- func() bool { return false }
-		})
-
-	return true
-}
-
-func (connection *connection) sendSecurityList() {
-	connection.service.securities.Request(
-		func(securities trekt.SecurityStateList) {
-			connection.strandChan <- func() bool {
-				if connection.securitiesSubscription.updatesChan == nil {
-					connection.securitiesSubscription.id,
-						connection.securitiesSubscription.updatesChan =
-						connection.service.securities.CreateNotification()
-				}
-				connection.send(connection.protocol.securityList(securities))
-				return true
-			}
-		})
-}
-
 func (connection *connection) initUser(auth trekt.Auth) bool {
 	user := createUser(auth)
 	for key, value := range connection.user.methods {
@@ -219,27 +192,46 @@ func (connection *connection) initUser(auth trekt.Auth) bool {
 	}
 
 	user.methods[connection.protocol.securityListTopic()] =
-		func(string, interface{}) bool {
-			connection.sendSecurityList()
-			return true
-		}
+		connection.sendSecurityList
 
-	if user.auth.IsMarketDataAllowed && !connection.initMarketMethods(&user) {
-		return false
+	if user.auth.IsMarketDataAllowed {
+		user.methods[connection.protocol.depthOfMarketTopic()] =
+			connection.startDepthOfMarket
 	}
 
+	connection.user.close()
 	connection.user = user
 	return true
 }
 
-func (connection *connection) initMarketMethods(user *user) bool {
-	var err error
-	user.marketData, err = connection.service.marketData.CreateService()
-	if err != nil {
-		connection.logErrorf(`Failed to create market data service: "%s".`, err)
-		return false
+func (connection *connection) updateSecurities(
+	update trekt.SecurityStateList) {
+
+	exchanges := map[string]*map[string]tradinglib.Security{}
+	for _, security := range update {
+		if security.IsActive != nil || !*security.IsActive {
+			continue
+		}
+		securities, has := exchanges[security.Security.Exchange]
+		if !has {
+			newList := map[string]tradinglib.Security{}
+			securities = &newList
+		}
+		(*securities)[security.Security.ID] = security.Security
 	}
-	return true
+	connection.securitiesSubscription.securities = exchanges
+	connection.send(connection.protocol.securityList(update))
+}
+
+func (connection *connection) resolveSecurity(
+	exchange, security string) *tradinglib.Security {
+
+	if list, has := connection.securitiesSubscription.securities[exchange]; has {
+		if item, has := (*list)[security]; has {
+			return &item
+		}
+	}
+	return nil
 }
 
 func (connection *connection) formatLogRecord(source string) string {

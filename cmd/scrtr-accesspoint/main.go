@@ -46,12 +46,14 @@ func main() {
 
 	marketData := trekt.CreateMarketDataExchangeOrExit(uint16(*capacity))
 	defer marketData.Close()
+	marketDataSubscription := marketData.CreateServiceOrExit(uint16(*capacity))
+	defer marketDataSubscription.Close()
 
 	service := service{
 		trekt:      trekt,
 		auth:       authService,
 		securities: securitiesSubscription,
-		marketData: marketData}
+		marketData: marketDataSubscription}
 
 	router := mux.NewRouter()
 	router.HandleFunc(*endpoint, service.handle)

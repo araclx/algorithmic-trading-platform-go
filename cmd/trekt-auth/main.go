@@ -22,7 +22,7 @@ func auth(login, password string) (*trekt.Auth, error) {
 	if login != "guest" || password != "guest" {
 		return nil, errors.New("Wrong login or password")
 	}
-	return &trekt.Auth{Login: login}, nil
+	return &trekt.Auth{Login: login, IsMarketDataAllowed: true}, nil
 }
 
 func main() {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mitchellh/mapstructure"
@@ -16,8 +17,8 @@ import (
 
 func runExchangeInfoUpdating(
 	updateInterval time.Duration,
-	trekt *t.Trekt,
-	stopChan <-chan struct{}) {
+	trekt t.Trekt,
+	stopChan <-chan interface{}) {
 
 	updater := exchangeInfoUpdater{
 		trekt:       trekt,
@@ -64,7 +65,7 @@ type symbolInfo struct {
 }
 
 type exchangeInfoUpdater struct {
-	trekt       *t.Trekt
+	trekt       t.Trekt
 	securities  map[string]t.SecurityState
 	updatesChan chan t.SecurityStateList
 }
@@ -81,9 +82,9 @@ func (updater *exchangeInfoUpdater) update() bool {
 	new := 0
 	activated := 0
 	deactivated := 0
-	known := make(map[string]struct{})
+	known := make(map[string]interface{})
 	for _, symbol := range symbols {
-		known[symbol.Symbol] = struct{}{}
+		known[symbol.Symbol] = nil
 		isActive := symbol.Status == "TRADING"
 
 		security, isExistent := updater.securities[symbol.Symbol]
@@ -104,8 +105,8 @@ func (updater *exchangeInfoUpdater) update() bool {
 				Symbol: tradinglib.CreateCurrencyPairSymbol(
 					symbol.BaseAsset,
 					symbol.QuoteAsset),
-				Exchange: updater.trekt.Type,
-				ID:       symbol.Symbol},
+				Exchange: updater.trekt.GetTypeName(),
+				ID:       strings.ToLower(symbol.Symbol)},
 			IsActive: &isActive}
 
 		updater.securities[symbol.Symbol] = security
@@ -161,9 +162,7 @@ func requestSymbolInfo() ([]symbolInfo, error) {
 			fmt.Errorf(`Failed to parse exchange info request response: "%s"`, err)
 	}
 
-	var symbolsNode interface{}
-	var isFormatOk bool
-	symbolsNode, isFormatOk = exchangeInfo["symbols"]
+	symbolsNode, isFormatOk := exchangeInfo["symbols"]
 	if !isFormatOk {
 		return nil, fmt.Errorf(
 			`Failed to parse exchange info request response (bad format): "%s"`, err)

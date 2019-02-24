@@ -30,18 +30,18 @@ func main() {
 	exchange := trekt.CreateMarketDataExchangeOrExit(1)
 	defer exchange.Close()
 
-	exchangeInfoUpdatingStopChan := make(chan struct{})
+	exchangeInfoUpdatingStopChan := make(chan interface{})
 	go runExchangeInfoUpdating(
 		15*time.Minute, trekt, exchangeInfoUpdatingStopChan)
 	defer func() {
-		exchangeInfoUpdatingStopChan <- struct{}{}
+		exchangeInfoUpdatingStopChan <- nil
 		close(exchangeInfoUpdatingStopChan)
 	}()
 
-	streamClientStopChan := make(chan struct{})
-	go runStreamClient(exchange, trekt, streamClientStopChan)
+	streamClientStopChan := make(chan interface{})
+	go runStreamClient(exchange, streamClientStopChan)
 	defer func() {
-		streamClientStopChan <- struct{}{}
+		streamClientStopChan <- nil
 		close(streamClientStopChan)
 	}()
 

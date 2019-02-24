@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/rektra-network/trekt-go/pkg/tradinglib"
 	"github.com/streadway/amqp"
@@ -26,24 +25,28 @@ type SecurityStateList = []SecurityState
 
 ///////////////////////////////////////////////////////////////////////////////
 
-type securitySymbolStateMessage struct {
-	ID       string
-	Symbol   interface{}
-	Type     string
-	IsActive *bool
+type securityUpdateMessage struct {
+	Symbol    interface{}
+	Type      string
+	PricePrec uint16
+	QtyPrec   uint16
+	IsActive  *bool
 }
-type securityStateListMessage = []securitySymbolStateMessage
+type securityUpdateListMessage struct {
+	SeqNum  uint64
+	Updates map[string]securityUpdateMessage
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 
 // SecuritiesExchange represents security states exchange.
-type SecuritiesExchange struct{ mqExchange }
+type SecuritiesExchange struct{ mqChannel }
 
 func createSecuritiesExchange(
-	trekt *Trekt, capacity uint16) (*SecuritiesExchange, error) {
+	trekt Trekt, mq *Mq, capacity uint16) (*SecuritiesExchange, error) {
 
 	result := &SecuritiesExchange{}
-	err := result.mqExchange.init("securities", "topic", trekt, capacity)
+	err := result.mqChannel.init("securities", "topic", trekt, mq, capacity)
 	if err != nil {
 		return nil, err
 	}
@@ -51,9 +54,7 @@ func createSecuritiesExchange(
 }
 
 // Close closes the exchange.
-func (exchange *SecuritiesExchange) Close() {
-	exchange.mqExchange.close()
-}
+func (exchange *SecuritiesExchange) Close() { exchange.mqChannel.Close() }
 
 // CreateServer creates a server which provides the information about
 // securities.
@@ -101,9 +102,11 @@ func (exchange *SecuritiesExchange) CreateSubscriptionOrExit(
 // SecuritiesServer represents a server that holds securities list and provides
 // information about this list.
 type SecuritiesServer struct {
-	exchange   *SecuritiesExchange
-	securities map[string]*map[string]securitySymbolStateMessage
-	heartbeat  mqRPCServer
+	exchange       *SecuritiesExchange
+	securities     map[string]map[string]securityUpdateMessage
+	heartbeat      MqHeartbeatServer
+	snapshotServer *mqSubscription
+	sequenceNumber uint64
 }
 
 func createSecuritiesServer(
@@ -133,62 +136,29 @@ func (server *SecuritiesServer) RunOrExit(
 func (server *SecuritiesServer) Run(
 	updatesChan <-chan SecurityStateList) error {
 
-	requestChan := make(chan string)
-	defer close(requestChan)
-	responseChan := make(chan map[string]securityStateListMessage)
-	defer close(responseChan)
-
-	err := server.heartbeat.init(
-		"", // query
-		&server.exchange.mqExchange)
-	if err != nil {
-		return err
-	}
-	defer server.heartbeat.close()
-	go server.heartbeat.handle(func(request amqp.Delivery) (interface{}, error) {
-		return struct{}{}, nil
-	})
-
-	var snapshotServer *mqSubscription
-	snapshotServer, err = createMqSubscription(
-		"*.request", // query
-		&server.exchange.mqExchange,
-		true) // auto-ack
-	if err != nil {
-		return err
-	}
-	defer snapshotServer.close()
-	go snapshotServer.handle(func(request amqp.Delivery) {
-		pos := strings.Index(request.RoutingKey, ".")
-		requestChan <- request.RoutingKey[:pos]
-		response, isOpened := <-responseChan
-		if !isOpened {
-			return
-		}
-		message := amqp.Publishing{
-			ReplyTo:     server.heartbeat.getReplyName(),
-			ContentType: "application/json"}
-		var err error
-		message.Body, err = json.Marshal(response)
-		if err != nil {
-			server.exchange.trekt.LogErrorf(
-				`Failed to serialize security state list: "%s".`, err)
-			return
-		}
-		err = snapshotServer.exchange.publish(
-			request.ReplyTo,
-			false, // mandatory
-			false, // immediate
-			message)
-		if err != nil {
-			server.exchange.trekt.LogErrorf(
-				`Failed to publish security state list: "%s".`, err)
-		}
-
-	})
-
-	server.securities = make(map[string]*map[string]securitySymbolStateMessage)
+	server.securities = map[string]map[string]securityUpdateMessage{}
 	defer server.unregisterAll()
+
+	var err error
+	server.heartbeat, err = CreateMqHeartbeatServer(&server.exchange.mqChannel,
+		server.exchange.trekt)
+	if err != nil {
+		return err
+	}
+	defer server.heartbeat.Close()
+
+	server.snapshotServer, err = createMqSubscription(
+		"*.request", &server.exchange.mqChannel, true, server.exchange.trekt)
+	if err != nil {
+		return err
+	}
+	defer server.snapshotServer.close()
+	requestChan := make(chan amqp.Delivery)
+	defer close(requestChan)
+	go server.snapshotServer.handle(func(request amqp.Delivery) {
+		requestChan <- request
+	})
+
 	for {
 		select {
 		case update, isOpened := <-updatesChan:
@@ -196,118 +166,88 @@ func (server *SecuritiesServer) Run(
 				return nil
 			}
 			server.broadcast(server.merge(update))
-		case request := <-requestChan:
-			if request == "*" {
-				responseChan <- server.dumpAll()
-			} else {
-				responseChan <- server.dumpExchange(request)
+		case request, isOpen := <-requestChan:
+			if !isOpen {
+				return nil
 			}
+			server.handleSnapshotRequest(request)
 		}
 	}
 
 }
 
 func (server *SecuritiesServer) merge(
-	update SecurityStateList) map[string]*map[string]securitySymbolStateMessage {
+	update SecurityStateList) map[string]map[string]securityUpdateMessage {
 
-	result := make(map[string]*map[string]securitySymbolStateMessage)
+	result := map[string]map[string]securityUpdateMessage{}
 
-	for _, security := range update {
-		message := securitySymbolStateMessage{
-			ID:       security.Security.ID,
-			Symbol:   security.Security.Symbol.Export(),
-			Type:     security.Security.Symbol.GetType(),
-			IsActive: security.IsActive}
+	for _, update := range update {
+		symbol := update.Security.Symbol.Export()
+		securityType := update.Security.Symbol.GetType()
 
 		{
-			list, has := result[security.Security.Exchange]
-			if !has {
-				newNode := make(map[string]securitySymbolStateMessage)
-				list = &newNode
-				result[security.Security.Exchange] = list
+			message := securityUpdateMessage{
+				Symbol:    symbol,
+				Type:      securityType,
+				PricePrec: update.Security.PricePrecision,
+				QtyPrec:   update.Security.QtyPrecision,
+				IsActive:  update.IsActive}
+			if list, has := result[update.Security.Exchange]; !has {
+				result[update.Security.Exchange] =
+					map[string]securityUpdateMessage{update.Security.ID: message}
+			} else {
+				list[update.Security.ID] = message
 			}
-			(*list)[security.Security.ID] = message
 		}
 
-		if security.IsActive == nil {
-			if _, has := server.securities[security.Security.Exchange]; has {
-				delete(*server.securities[security.Security.Exchange],
-					security.Security.ID)
+		exchange, hasExchange := server.securities[update.Security.Exchange]
+
+		if update.IsActive == nil {
+			if hasExchange {
+				delete(exchange, update.Security.ID)
 			}
+			continue
+		}
+
+		snapshot := securityUpdateMessage{
+			Symbol:    symbol,
+			Type:      securityType,
+			PricePrec: update.Security.PricePrecision,
+			QtyPrec:   update.Security.QtyPrecision,
+			IsActive:  update.IsActive}
+		if hasExchange {
+			exchange[update.Security.ID] = snapshot
 		} else {
-			exchange, has := server.securities[security.Security.Exchange]
-			if !has {
-				newExchange := make(map[string]securitySymbolStateMessage)
-				exchange = &newExchange
-				server.securities[security.Security.Exchange] = exchange
-			}
-			(*exchange)[security.Security.ID] = message
+			server.securities[update.Security.Exchange] =
+				map[string]securityUpdateMessage{update.Security.ID: snapshot}
 		}
 
 	}
 
-	return result
-}
-
-func (server *SecuritiesServer) dumpAll() map[string]securityStateListMessage {
-	result := make(map[string]securityStateListMessage)
-	for exchange, securities := range server.securities {
-		list := make(securityStateListMessage, len(*securities))
-		i := 0
-		for _, security := range *securities {
-			list[i] = security
-			i++
-		}
-		result[exchange] = list
-	}
-	return result
-}
-
-func (server *SecuritiesServer) dumpExchange(
-	exchange string) map[string]securityStateListMessage {
-
-	result := make(map[string]securityStateListMessage)
-	if securities, has := server.securities[exchange]; has {
-		list := make(securityStateListMessage, len(*securities))
-		i := 0
-		for _, security := range *securities {
-			list[i] = security
-			i++
-		}
-		result[exchange] = list
-	}
 	return result
 }
 
 func (server *SecuritiesServer) broadcast(
-	source map[string]*map[string]securitySymbolStateMessage) {
+	source map[string]map[string]securityUpdateMessage) {
 
 	for exchange, securities := range source {
-		list := make(securityStateListMessage, len(*securities))
-		i := 0
-		for _, security := range *securities {
-			list[i] = security
-			i++
-		}
 		message := amqp.Publishing{
-			ReplyTo:     server.heartbeat.getReplyName(),
-			ContentType: "application/json"}
+			ReplyTo: server.heartbeat.GetAddress(), ContentType: "application/json"}
 		var err error
-		message.Body, err = json.Marshal(list)
+		message.Body, err = json.Marshal(&securityUpdateListMessage{
+			SeqNum: server.sequenceNumber, Updates: securities})
 		if err != nil {
 			server.exchange.trekt.LogErrorf(
 				`Failed to serialize security state list: "%s".`, err)
 			continue
 		}
-		err = server.exchange.publish(
-			exchange+".update",
-			false, // mandatory
-			false, // immediate
-			message)
+		err = server.exchange.Publish(exchange+".update", false, false, message)
 		if err != nil {
 			server.exchange.trekt.LogErrorf(
 				`Failed to publish security state list: "%s".`, err)
+			continue
 		}
+		server.sequenceNumber++
 	}
 }
 
@@ -319,14 +259,64 @@ func (server *SecuritiesServer) unregisterAll() {
 		"Removing securities from %d exchanges"+
 			" due to the registration process is stopped...",
 		len(server.securities))
-	for _, securities := range server.securities {
-		for id, security := range *securities {
-			security.IsActive = nil
-			(*securities)[id] = security
+	message := map[string]map[string]securityUpdateMessage{}
+	for exchangeID, securities := range server.securities {
+		exchange, hasExchange := message[exchangeID]
+		if !hasExchange {
+			exchange = map[string]securityUpdateMessage{}
+			message[exchangeID] = exchange
+		}
+		for id := range securities {
+			exchange[id] = securityUpdateMessage{IsActive: nil}
 		}
 	}
-	server.broadcast(server.securities)
-	server.securities = make(map[string]*map[string]securitySymbolStateMessage)
+	server.broadcast(message)
+	server.securities = map[string]map[string]securityUpdateMessage{}
+}
+
+func (server *SecuritiesServer) handleSnapshotRequest(
+	requestMessage amqp.Delivery) {
+
+	request :=
+		requestMessage.RoutingKey[:strings.Index(requestMessage.RoutingKey, ".")]
+	var response map[string]securityUpdateListMessage
+	if request == "*" {
+		for exchange, securities := range server.securities {
+			response[exchange] = securityUpdateListMessage{
+				SeqNum:  server.sequenceNumber,
+				Updates: securities}
+		}
+	} else if snapshot, has := server.securities[request]; has {
+		response[request] = securityUpdateListMessage{
+			SeqNum:  server.sequenceNumber,
+			Updates: snapshot}
+	} else {
+		response[request] = securityUpdateListMessage{
+			SeqNum:  server.sequenceNumber,
+			Updates: map[string]securityUpdateMessage{}}
+	}
+
+	responseMessage := amqp.Publishing{
+		ReplyTo:     server.heartbeat.GetAddress(),
+		ContentType: "application/json"}
+	var err error
+	responseMessage.Body, err = json.Marshal(response)
+	if err != nil {
+		server.exchange.trekt.LogErrorf(
+			`Failed to serialize security state list: "%s".`, err)
+		return
+	}
+	err = server.snapshotServer.mq.Publish(
+		requestMessage.ReplyTo, // key
+		false,                  // mandatory
+		false,                  // immediate
+		responseMessage)
+	if err != nil {
+		server.exchange.trekt.LogErrorf(
+			`Failed to publish security state list: "%s".`, err)
+	}
+	server.sequenceNumber++
+
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -342,26 +332,22 @@ type SecuritiesSubscriptionNotificationSubscriber struct{}
 // SecuritiesSubscription represents subscription to security lists changes.
 type SecuritiesSubscription struct {
 	mqSubscription
-	rpc mqRPCClient
 
 	updatesChan chan struct {
-		update           securityStateListMessage
+		update           securityUpdateListMessage
 		exchange, source string
 	}
 
 	snapshotsChan chan struct {
-		snapshot map[string]securityStateListMessage
+		snapshot map[string]securityUpdateListMessage
 		source   string
 	}
 	snapshotsSubscription *mqSubscription
 
-	sources map[string]*map[string]*struct {
-		state   SecurityState
-		sources map[string]struct{}
-	}
-	securities map[string]*map[string]*struct {
-		state   SecurityState
-		sources map[string]struct{}
+	securities map[string]*struct {
+		sequenceNumber uint64
+		source         string
+		states         map[string]*SecurityState
 	}
 
 	snapshotRequestsChan chan func(SecurityStateList)
@@ -373,6 +359,8 @@ type SecuritiesSubscription struct {
 	}
 	notifyCancelRequestChan chan SecuritiesSubscriptionNotificationID
 	notifyChannels          map[SecuritiesSubscriptionNotificationID]chan SecurityStateList
+
+	heartbeat MqHeartbeatClient
 }
 
 func createSecuritiesSubscription(
@@ -380,61 +368,43 @@ func createSecuritiesSubscription(
 	clientsCapacity uint16) (*SecuritiesSubscription, error) {
 
 	result := &SecuritiesSubscription{
-		sources: make(map[string]*map[string]*struct {
-			state   SecurityState
-			sources map[string]struct{}
-		}),
-		securities: make(map[string]*map[string]*struct {
-			state   SecurityState
-			sources map[string]struct{}
-		})}
+		securities: map[string]*struct {
+			sequenceNumber uint64
+			source         string
+			states         map[string]*SecurityState
+		}{}}
 
 	result.updatesChan = make(chan struct {
-		update           securityStateListMessage
+		update           securityUpdateListMessage
 		exchange, source string
 	}, 1)
-	err := result.mqSubscription.init(
-		"*.update", // query
-		&exchange.mqExchange,
-		true) // is auto-ack
+	err := result.mqSubscription.init("*.update", &exchange.mqChannel, true,
+		exchange.trekt)
 	if err != nil {
 		close(result.updatesChan)
 		return nil, err
 	}
 	go result.handle(func(message amqp.Delivery) {
 		update := struct {
-			update           securityStateListMessage
+			update           securityUpdateListMessage
 			exchange, source string
-		}{
-			update:   securityStateListMessage{},
-			exchange: message.RoutingKey[:strings.Index(message.RoutingKey, ".")],
-			source:   message.ReplyTo}
+		}{exchange: message.RoutingKey[:strings.Index(message.RoutingKey, ".")],
+			source: message.ReplyTo}
 		err := json.Unmarshal(message.Body, &update.update)
 		if err != nil {
-			result.exchange.trekt.LogErrorf(
+			result.mqSubscription.trekt.LogErrorf(
 				`Failed to parse security list update: "%s".`, err)
 		}
 		result.updatesChan <- update
 	})
 
-	err = result.rpc.init(result.exchange)
-	if err != nil {
-		close(result.snapshotsChan)
-		result.mqSubscription.close()
-		close(result.updatesChan)
-		return nil, err
-	}
-
 	result.snapshotsChan = make(chan struct {
-		snapshot map[string]securityStateListMessage
+		snapshot map[string]securityUpdateListMessage
 		source   string
 	}, 1)
-	result.snapshotsSubscription, err = createMqSubscription(
-		"", // query
-		result.exchange,
-		true) // auto-ack
+	result.snapshotsSubscription, err = createMqSubscription("", result.mq, true,
+		exchange.trekt)
 	if err != nil {
-		result.rpc.close()
 		close(result.snapshotsChan)
 		result.mqSubscription.close()
 		close(result.updatesChan)
@@ -442,28 +412,21 @@ func createSecuritiesSubscription(
 	}
 	go result.snapshotsSubscription.handle(func(message amqp.Delivery) {
 		snapshot := struct {
-			snapshot map[string]securityStateListMessage
+			snapshot map[string]securityUpdateListMessage
 			source   string
-		}{
-			snapshot: map[string]securityStateListMessage{},
-			source:   message.ReplyTo}
+		}{source: message.ReplyTo}
 		err := json.Unmarshal(message.Body, &snapshot.snapshot)
 		if err != nil {
-			result.exchange.trekt.LogErrorf(
-				`Failed to parse security list snapshot: "%s".`,
+			result.trekt.LogErrorf(`Failed to parse security list snapshot: "%s".`,
 				err)
 		}
 		result.snapshotsChan <- snapshot
 	})
-	err = result.exchange.publish(
-		"*.request", // key
-		false,       // mandatory
-		false,       // immediate
+	err = result.mq.Publish("*.request", false, false,
 		amqp.Publishing{ReplyTo: result.snapshotsSubscription.queue.Name})
 	if err != nil {
 		result.snapshotsSubscription.close()
 		close(result.snapshotsChan)
-		result.rpc.close()
 		result.mqSubscription.close()
 		close(result.updatesChan)
 		return nil, err
@@ -494,7 +457,6 @@ func (subscription *SecuritiesSubscription) Close() {
 	close(subscription.snapshotRequestsChan)
 	subscription.snapshotsSubscription.close()
 	close(subscription.snapshotsChan)
-	subscription.rpc.close()
 	subscription.mqSubscription.close()
 	close(subscription.updatesChan)
 }
@@ -509,9 +471,7 @@ func (subscription *SecuritiesSubscription) CreateNotification() (
 	subscription.notifyRequestsChan <- struct {
 		id         SecuritiesSubscriptionNotificationID
 		notifyChan chan SecurityStateList
-	}{
-		id:         id,
-		notifyChan: notifyChan}
+	}{id: id, notifyChan: notifyChan}
 	return id, notifyChan
 }
 
@@ -538,8 +498,16 @@ func (subscription *SecuritiesSubscription) run() {
 		}
 	}()
 
-	heartbeatTicker := time.NewTicker(1 * time.Minute)
-	defer heartbeatTicker.Stop()
+	var err error
+	subscription.heartbeat, err = CreateMqHeartbeatClient(
+		subscription.mq, subscription.mqSubscription.trekt)
+	if err != nil {
+		subscription.mqSubscription.trekt.LogErrorf(
+			`Failed to initialize heartbeat client: "%s".`, err)
+	} else {
+		defer subscription.heartbeat.Close()
+	}
+
 	for {
 		select {
 		case update, isOpen := <-subscription.updatesChan:
@@ -569,8 +537,8 @@ func (subscription *SecuritiesSubscription) run() {
 				return
 			}
 			subscription.handleNotifyCancelRequest(id)
-		case <-heartbeatTicker.C:
-			subscription.checkSources()
+		case fail := <-subscription.heartbeat.GetFailedTestsChan():
+			subscription.removeDisconnectedSource(fail.Address, fail.Err)
 		}
 	}
 }
@@ -583,13 +551,35 @@ type securitiesUpdateMerger struct {
 
 func (merger *securitiesUpdateMerger) merge(
 	exchange string,
-	updates securityStateListMessage,
+	updates securityUpdateListMessage,
 	source string,
-	hasPriority bool) {
+	hasPriority bool,
+	heartbeat MqHeartbeatClient) {
 
-	var securities *map[string]*struct {
-		state   SecurityState
-		sources map[string]struct{}
+	securities := merger.subscription.securities[exchange]
+	if securities == nil {
+		if updates.SeqNum != 0 {
+			return
+		}
+		securities = &struct {
+			sequenceNumber uint64
+			source         string
+			states         map[string]*SecurityState
+		}{sequenceNumber: updates.SeqNum,
+			source: source,
+			states: map[string]*SecurityState{}}
+		merger.subscription.securities[exchange] = securities
+		heartbeat.AddAddress(source)
+	} else if updates.SeqNum == 0 {
+		if source != securities.source {
+			heartbeat.RemoveAddress(securities.source)
+			securities.source = source
+			heartbeat.AddAddress(securities.source)
+		}
+	} else if updates.SeqNum <= securities.sequenceNumber {
+		return
+	} else if source != securities.source {
+		return
 	}
 
 	new := 0
@@ -597,92 +587,65 @@ func (merger *securitiesUpdateMerger) merge(
 	deactivated := 0
 	removed := 0
 
-	for _, update := range updates {
+	if updates.SeqNum == 0 {
+		for id, security := range securities.states {
+			if _, has := updates.Updates[id]; !has {
+				merger.changed = append(merger.changed, SecurityState{
+					Security: security.Security, IsActive: nil})
+				removed++
+			}
+		}
+	}
+
+	for id, update := range updates.Updates {
+		security := securities.states[id]
+		isNew := false
+		if security == nil {
+			if update.IsActive == nil {
+				continue
+			}
+			security = &SecurityState{}
+			securities.states[id] = security
+			isNew = true
+			new++
+		}
 
 		symbol, err := tradinglib.ImportSymbol(update.Type, update.Symbol)
 		if err != nil {
-			merger.subscription.exchange.trekt.LogErrorf(
+			merger.subscription.trekt.LogErrorf(
 				`Failed to import security symbol: "%s".`, err)
 			continue
 		}
-
-		if securities == nil {
-			var hasExchange bool
-			securities, hasExchange = merger.subscription.securities[exchange]
-			if !hasExchange {
-				newNode := make(map[string]*struct {
-					state   SecurityState
-					sources map[string]struct{}
-				})
-				securities = &newNode
-				merger.subscription.securities[exchange] = securities
-			}
-		}
-
-		sourceRefs, hasSource := merger.subscription.sources[source]
-		if !hasSource {
-			newNode := make(map[string]*struct {
-				state   SecurityState
-				sources map[string]struct{}
-			})
-			sourceRefs = &newNode
-			merger.subscription.sources[source] = sourceRefs
-		}
-
-		security, hasSecurity := (*securities)[update.ID]
-		if hasSecurity {
-			security.sources[source] = struct{}{}
-			if !hasPriority {
-				continue
-			}
-		}
-
-		new++
 		if update.IsActive != nil {
-			if *update.IsActive {
-				activated++
-			} else {
-				deactivated++
-			}
-			if hasSecurity &&
-				security.state.IsActive != nil &&
-				*update.IsActive == *security.state.IsActive {
-				continue
+			security.Security = tradinglib.Security{
+				Symbol:         symbol,
+				ID:             id,
+				Exchange:       exchange,
+				PricePrecision: update.PricePrec,
+				QtyPrecision:   update.QtyPrec}
+			if !isNew && *update.IsActive != *security.IsActive {
+				if *update.IsActive {
+					activated++
+				} else {
+					deactivated++
+				}
 			}
 		} else {
 			removed++
-			if !hasSecurity {
-				continue
-			}
+			delete(securities.states, id)
 		}
+		security.IsActive = update.IsActive
 
-		state := SecurityState{
-			Security: tradinglib.Security{
-				Symbol:   symbol,
-				ID:       update.ID,
-				Exchange: exchange},
-			IsActive: update.IsActive}
-		stateWithSources := &struct {
-			state   SecurityState
-			sources map[string]struct{}
-		}{
-			state:   state,
-			sources: map[string]struct{}{source: struct{}{}}}
-
-		(*securities)[update.ID] = stateWithSources
-		(*sourceRefs)[update.ID] = stateWithSources
-		merger.changed = append(merger.changed, state)
+		merger.changed = append(merger.changed, *security)
 	}
 
-	if securities == nil {
-		return
-	}
+	securities.sequenceNumber = updates.SeqNum
 
-	merger.subscription.exchange.trekt.LogInfof(
-		`Received %d securities in %s from "%s". Full list: %d`+
-			", added: %d, removed: %d, activated: %d, deactivated: %d.",
-		len(updates), merger.actionName, exchange, len(*securities),
-		new, removed, activated, deactivated)
+	merger.subscription.trekt.LogInfof(
+		`Received %d securities in %s with sequence number %d from "%s" (%s).`+
+			" Full list: %d, added: %d, removed: %d, activated: %d, deactivated: %d.",
+		len(updates.Updates), merger.actionName, updates.SeqNum, exchange, source,
+		len(securities.states), new, removed, activated, deactivated)
 }
 
 func (merger *securitiesUpdateMerger) notify() {
@@ -690,68 +653,47 @@ func (merger *securitiesUpdateMerger) notify() {
 }
 
 func (subscription *SecuritiesSubscription) handleSecuritiesUpdate(
-	exchange string,
-	update securityStateListMessage,
-	source string) {
+	exchange string, update securityUpdateListMessage, source string) {
 
 	merger := securitiesUpdateMerger{
 		subscription: subscription,
 		changed:      []SecurityState{},
 		actionName:   "update"}
-	merger.merge(exchange, update, source, true)
+	merger.merge(exchange, update, source, true, subscription.heartbeat)
 	merger.notify()
 }
 
 func (subscription *SecuritiesSubscription) handleSecuritiesSnapshot(
-	snapshot map[string]securityStateListMessage,
-	source string) {
+	snapshot map[string]securityUpdateListMessage, source string) {
 
 	merger := securitiesUpdateMerger{
 		subscription: subscription,
 		changed:      []SecurityState{},
 		actionName:   "snapshot"}
 	for exchange, update := range snapshot {
-		merger.merge(exchange, update, source, false)
+		merger.merge(exchange, update, source, false, subscription.heartbeat)
 	}
 	merger.notify()
 }
 
-func (subscription *SecuritiesSubscription) checkSources() {
-	for source := range subscription.sources {
-		subscription.rpc.request(
-			source,
-			true,            // mandatory
-			nil,             // request
-			func([]byte) {}, // success handler
-			func(err error) {
-				securities, has := subscription.sources[source]
-				if !has {
-					return
-				}
-				changed := []SecurityState{}
-				exchanges := map[string]struct{}{}
-				delete(subscription.sources, source)
-				for _, security := range *securities {
-					delete(security.sources, source)
-					if len(security.sources) == 0 {
-						delete(*subscription.securities[security.state.Security.Exchange],
-							security.state.Security.ID)
-						security.state.IsActive = nil
-						changed = append(changed, security.state)
-						exchanges[security.state.Security.Exchange] = struct{}{}
-					}
-				}
-				exchangesList := []string{}
-				for exchange := range exchanges {
-					exchangesList = append(exchangesList, exchange)
-				}
-				subscription.exchange.trekt.LogInfof(
-					`Deleted %d securities from "%s"`+
-						` by source "%s" heartbeat error "%s".`,
-					len(changed), strings.Join(exchangesList, `", "`), source, err)
-				subscription.notify(changed)
-			}) // fail handler
+func (subscription *SecuritiesSubscription) removeDisconnectedSource(
+	source string, heartbeatErr error) {
+
+	changed := []SecurityState{}
+	for exchange, securities := range subscription.securities {
+		if securities.source != source {
+			continue
+		}
+		delete(subscription.securities, exchange)
+		for _, security := range securities.states {
+			security.IsActive = nil
+			changed = append(changed, *security)
+		}
+		subscription.trekt.LogInfof(`Deleted %d securities from "%s"`+
+			` by source "%s" heartbeat error "%s".`,
+			len(securities.states), exchange, securities.source, heartbeatErr)
 	}
+	subscription.notify(changed)
 }
 
 func (subscription *SecuritiesSubscription) notify(updates SecurityStateList) {
@@ -764,9 +706,9 @@ func (subscription *SecuritiesSubscription) handleSnapshotRequest(
 	callback func(SecurityStateList)) {
 
 	list := SecurityStateList{}
-	for _, exchange := range subscription.securities {
-		for _, security := range *exchange {
-			list = append(list, security.state)
+	for _, securities := range subscription.securities {
+		for _, security := range securities.states {
+			list = append(list, *security)
 		}
 	}
 	callback(list)

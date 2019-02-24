@@ -3,7 +3,6 @@
 package trekt
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,22 +16,28 @@ import (
 
 // LogExchange represents logger exchange.
 type LogExchange struct {
-	trekt       *Trekt
+	streamChannel
+	trekt       Trekt
 	key         sarama.Encoder
 	producer    sarama.AsyncProducer
 	stopBarrier sync.WaitGroup
 }
 
-func createLogExchange(trekt *Trekt, capacity uint16) (*LogExchange, error) {
+func createLogExchange(
+	trekt Trekt, stream *Stream, capacity uint16) (*LogExchange, error) {
 
 	result := &LogExchange{
 		trekt: trekt,
-		key:   sarama.StringEncoder(trekt.Type)}
+		key:   sarama.StringEncoder(trekt.GetTypeName())}
 
-	var err error
-	result.producer, err = sarama.NewAsyncProducerFromClient(
-		result.trekt.stream.client)
+	err := result.streamChannel.init(stream, result.trekt)
 	if err != nil {
+		return nil, err
+	}
+
+	result.producer, err = sarama.NewAsyncProducerFromClient(result.stream.client)
+	if err != nil {
+		result.streamChannel.Close()
 		return nil, err
 	}
 
@@ -54,11 +59,11 @@ func (exchange *LogExchange) Close() {
 		log.Printf(`Failed to close log stream producer: "%s".`, err)
 	}
 	exchange.stopBarrier.Wait()
+	exchange.streamChannel.Close()
 }
 
 // Subscribe creates a subscription to log-messages.
 func (exchange *LogExchange) Subscribe() (*LogSubscription, error) {
-
 	return createLogSubscription(exchange)
 }
 
@@ -73,7 +78,7 @@ func (exchange *LogExchange) publish(severity, record string) {
 	}
 	{
 		message, err := json.Marshal(logMessageData{
-			NodeID: exchange.trekt.id,
+			NodeID: exchange.trekt.GetID(),
 			Level:  severity,
 			Record: record})
 		if err != nil {
@@ -107,47 +112,23 @@ type logMessageData struct{ NodeID, Level, Record string }
 
 // LogSubscription represents subscription to logger data
 type LogSubscription struct {
-	exchange     *LogExchange
+	streamSubscription
 	consumer     sarama.ConsumerGroup
 	messagesChan chan sarama.ConsumerMessage
 }
 
 func createLogSubscription(exchange *LogExchange) (*LogSubscription, error) {
-
-	result := &LogSubscription{exchange: exchange}
-
-	var err error
-	result.consumer, err = sarama.NewConsumerGroupFromClient("log",
-		result.exchange.trekt.stream.client)
+	result := &LogSubscription{}
+	err := result.streamSubscription.init("log", &exchange.streamChannel)
 	if err != nil {
 		return nil, err
 	}
-
-	result.messagesChan = make(chan sarama.ConsumerMessage, 1)
-	context := context.Background()
-	go func() {
-		defer close(result.messagesChan)
-		for {
-			err := result.consumer.Consume(context, []string{"log"},
-				&logRecordHandler{
-					trekt:        result.exchange.trekt,
-					messagesChan: result.messagesChan})
-			if err != nil {
-				if err != sarama.ErrClosedConsumerGroup {
-					result.exchange.trekt.LogErrorf(
-						`Failed to consume log-records: "%s".`, err)
-				}
-				break
-			}
-		}
-	}()
-
 	return result, nil
 }
 
 // Close closes the subscription.
 func (subscription *LogSubscription) Close() {
-	if err := subscription.consumer.Close(); err != nil {
+	if err := subscription.streamSubscription.Close(); err != nil {
 		log.Printf(`Failed to close log stream consumer: "%s".`, err)
 	}
 }
@@ -160,7 +141,7 @@ func (subscription *LogSubscription) GetNextMessage() (
 	for {
 		result := logMessage{}
 		var isOpened bool
-		result.message, isOpened = <-subscription.messagesChan
+		result.message, isOpened = <-subscription.Messages()
 		if !isOpened {
 			return logMessage{}, false
 		}
@@ -173,7 +154,7 @@ func (subscription *LogSubscription) GetNextMessage() (
 }
 
 type logRecordHandler struct {
-	trekt        *Trekt
+	trekt        Trekt
 	messagesChan chan<- sarama.ConsumerMessage
 }
 

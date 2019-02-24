@@ -13,10 +13,10 @@ import (
 type service struct {
 	websocketUpgrader websocket.Upgrader
 
-	trekt      *trekt.Trekt
+	trekt      trekt.Trekt
 	auth       *trekt.AuthService
 	securities *trekt.SecuritiesSubscription
-	marketData *trekt.MarketDataExchange
+	marketData *trekt.MarketDataService
 
 	lastInstanceID      uint64
 	numberOfConnections uint64

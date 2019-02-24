@@ -3,8 +3,6 @@
 package main
 
 import (
-	"net/url"
-	"os"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -12,9 +10,8 @@ import (
 )
 
 func runStreamClient(
-	exchange *trekt.MarketDataExchange,
-	trekt *trekt.Trekt,
-	stopChan <-chan struct{}) {
+	exchange trekt.MarketDataExchange,
+	stopChan <-chan interface{}) {
 
 	requestsChan := make(chan struct {
 		securityID string
@@ -24,34 +21,21 @@ func runStreamClient(
 
 	server := exchange.CreateServerOrExit()
 	defer server.Close()
-	err := server.Handle(func(securityID string, isStart bool) error {
+	go server.Handle(func(security string, isStart bool) error {
 		requestsChan <- struct {
 			securityID string
 			isStart    bool
-		}{securityID: securityID,
-			isStart: isStart}
+		}{securityID: security, isStart: isStart}
 		return nil
 	})
-	if err != nil {
-		trekt.LogErrorf(`Failed to handle market data requests: "%s".`, err)
-		os.Exit(1)
-	}
 
-	var clientStopChan chan struct{}
-	defer func() {
-		if clientStopChan != nil {
-			clientStopChan <- struct{}{}
-			close(clientStopChan)
-		}
-	}()
-
-	subscription := make(map[string]struct{})
+	subscription := make(map[string]interface{})
 	updateSubscription := func(request struct {
 		securityID string
 		isStart    bool
 	}) {
 		if request.isStart {
-			subscription[request.securityID] = struct{}{}
+			subscription[request.securityID] = nil
 		} else {
 			delete(subscription, request.securityID)
 		}
@@ -64,6 +48,10 @@ func runStreamClient(
 			updateSubscription(request)
 
 			ticker := time.NewTicker(5 * time.Second)
+
+			// It has to wait for some time if other requests will be sent
+			// immediately after this to don't make too many requests when one client
+			// subscribes many securities subsequently:
 		requestsThinningLoop:
 			for {
 				select {
@@ -77,31 +65,33 @@ func runStreamClient(
 				}
 			}
 
-			if clientStopChan == nil {
-				clientStopChan = make(chan struct{})
-			} else {
-				clientStopChan <- struct{}{}
-			}
-			go func() {
-				defer func() { clientStopChan <- struct{}{} }()
-				securities := make(map[string]struct{})
+			{
+				securities := make([]string, len(subscription))
+				{
+					i := 0
+					for security := range subscription {
+						securities[i] = security
+						i++
+					}
+				}
 				numberOfFailedConnections := 0
 				for {
 					client, isNotStopped := createStreamClientOrWait(
-						securities, server, trekt, &numberOfFailedConnections, stopChan)
+						securities, server, exchange.GetTrekt(),
+						&numberOfFailedConnections, stopChan)
 					if !isNotStopped {
 						return
 					}
 					if client == nil {
 						continue
 					}
-					isNotStopped = client.run(clientStopChan)
-					client.close()
+					defer client.close()
+					isNotStopped = client.run(stopChan)
 					if !isNotStopped {
 						return
 					}
 				}
-			}()
+			}
 
 		case <-stopChan:
 			return
@@ -112,18 +102,16 @@ func runStreamClient(
 
 type streamClient struct {
 	server *trekt.MarketDataServer
-	trekt  *trekt.Trekt
+	trekt  trekt.Trekt
 	conn   *websocket.Conn
-
-	writeChan chan string
 }
 
 func createStreamClientOrWait(
-	securities map[string]struct{},
+	securities []string,
 	server *trekt.MarketDataServer,
-	trekt *trekt.Trekt,
+	trekt trekt.Trekt,
 	numberOfFailedConnections *int,
-	stopChan <-chan struct{}) (*streamClient, bool) {
+	stopChan <-chan interface{}) (*streamClient, bool) {
 
 	result, err := createStreamClient(securities, server, trekt)
 	if err == nil {
@@ -159,20 +147,27 @@ func createStreamClientOrWait(
 }
 
 func createStreamClient(
-	securities map[string]struct{},
+	securities []string,
 	server *trekt.MarketDataServer,
-	trekt *trekt.Trekt) (*streamClient, error) {
+	trekt trekt.Trekt) (*streamClient, error) {
 
-	url := url.URL{Scheme: "wss", Host: "stream.binance.com:9443", Path: "/"}
-	conn, _, err := websocket.DefaultDialer.Dial(url.String(), nil)
+	url := "wss://stream.binance.com:9443/stream?streams="
+	for i, security := range securities {
+		if i != 0 {
+			url += "/"
+		}
+		url += security + "@depth5"
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	result := &streamClient{
 		server: server,
-		conn:   conn,
-	}
+		trekt:  trekt,
+		conn:   conn}
 
 	return result, nil
 }
@@ -182,43 +177,24 @@ func (client *streamClient) close() {
 	client.trekt.LogInfo("Connection closed.")
 }
 
-func (client *streamClient) run(stopChan <-chan struct{}) bool {
+func (client *streamClient) run(stopChan <-chan interface{}) bool {
 
-	readChan := make(chan []byte, 100)
+	readChan := make(chan []byte, 1)
 	go func() {
+		defer close(readChan)
 		for {
 			_, data, err := client.conn.ReadMessage()
 			if err != nil {
 				client.trekt.LogDebugf(`Failed to read data from the server: "%s".`,
 					err)
-				break
+				return
 			}
 			if len(data) == 0 {
 				client.trekt.LogDebugf("EOF is received from the connection.")
-				break
+				return
 			}
 			readChan <- data
 		}
-		close(readChan)
-	}()
-
-	client.writeChan = make(chan string, 100)
-	defer close(client.writeChan)
-	writeStopChan := make(chan struct{})
-	go func() {
-		for {
-			message, isOpened := <-client.writeChan
-			if !isOpened {
-				break
-			}
-			err := client.conn.WriteMessage(
-				websocket.TextMessage, []byte(message))
-			if err != nil {
-				client.trekt.LogDebugf(`Failed to send message: "%s".`, err)
-				break
-			}
-		}
-		close(writeStopChan)
 	}()
 
 	for {
@@ -228,8 +204,6 @@ func (client *streamClient) run(stopChan <-chan struct{}) bool {
 				return true
 			}
 			client.handleMessages(data)
-		case <-writeStopChan:
-			return true
 		case <-stopChan:
 			return false
 		}

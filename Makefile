@@ -42,12 +42,16 @@ define push_docker_cmd_image
 	docker push $(1)
 endef
 
+define get_mock
+	mockgen -source=$(1).go -destination=mock/$(1).go $(2)
+endef
+
 define make_target
 	$(MAKE) -f $(THIS_FILE) $(1)
 endef
 
 
-.PHONY: help build build-accesspoint build-auth	release release-accesspoint release-auth
+.PHONY: help build build-accesspoint build-auth	release release-accesspoint release-auth mock
 
 
 help: ## Show this help.
@@ -82,3 +86,14 @@ release: ## Push all images on the hub.
 	@$(call make_target,release-accesspoint)
 	@$(call make_target,release-auth)
 	@$(call make_target,release-binance)
+
+
+mock: ## Generate mock interfaces for unit-tests.
+	@$(call get_mock,pkg/trekt/trekt,Trekt)
+	@$(call get_mock,pkg/trekt/util,Ticker)
+	@$(call get_mock,pkg/trekt/mqheartbeat,MqHeartbeatServer MqHeartbeatClient)
+	@$(call get_mock,pkg/trekt/mqchannel,MqChannel)
+	@$(call get_mock,pkg/trekt/streamchannel,StreamChannel)
+	@$(call get_mock,pkg/trekt/rpc,RPCClient)
+	@$(call get_mock,pkg/trekt/marketdata,MarketDataExchange)
+	@$(call get_mock,pkg/trekt/subscription,Subscription)
