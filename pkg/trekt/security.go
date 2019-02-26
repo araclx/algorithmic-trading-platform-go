@@ -32,6 +32,33 @@ type securityUpdateMessage struct {
 	QtyPrec   uint16
 	IsActive  *bool
 }
+
+func createSecurityUpdateMessage(
+	security tradinglib.Security, isActive *bool) securityUpdateMessage {
+
+	return securityUpdateMessage{
+		Symbol:    security.Symbol.Export(),
+		Type:      security.Symbol.GetType(),
+		PricePrec: security.PricePrecision,
+		QtyPrec:   security.QtyPrecision,
+		IsActive:  isActive}
+}
+func (message securityUpdateMessage) convertToSecurity(
+	id, exchange string) (*tradinglib.Security, error) {
+
+	result := &tradinglib.Security{
+		ID:             id,
+		Exchange:       exchange,
+		PricePrecision: message.PricePrec,
+		QtyPrecision:   message.QtyPrec}
+	var err error
+	result.Symbol, err = tradinglib.ImportSymbol(message.Type, message.Symbol)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 type securityUpdateListMessage struct {
 	SeqNum  uint64
 	Updates map[string]securityUpdateMessage
@@ -182,22 +209,14 @@ func (server *SecuritiesServer) merge(
 	result := map[string]map[string]securityUpdateMessage{}
 
 	for _, update := range update {
-		symbol := update.Security.Symbol.Export()
-		securityType := update.Security.Symbol.GetType()
 
-		{
-			message := securityUpdateMessage{
-				Symbol:    symbol,
-				Type:      securityType,
-				PricePrec: update.Security.PricePrecision,
-				QtyPrec:   update.Security.QtyPrecision,
-				IsActive:  update.IsActive}
-			if list, has := result[update.Security.Exchange]; !has {
-				result[update.Security.Exchange] =
-					map[string]securityUpdateMessage{update.Security.ID: message}
-			} else {
-				list[update.Security.ID] = message
-			}
+		message := createSecurityUpdateMessage(update.Security, update.IsActive)
+
+		if list, has := result[update.Security.Exchange]; !has {
+			result[update.Security.Exchange] =
+				map[string]securityUpdateMessage{update.Security.ID: message}
+		} else {
+			list[update.Security.ID] = message
 		}
 
 		exchange, hasExchange := server.securities[update.Security.Exchange]
@@ -206,20 +225,11 @@ func (server *SecuritiesServer) merge(
 			if hasExchange {
 				delete(exchange, update.Security.ID)
 			}
-			continue
-		}
-
-		snapshot := securityUpdateMessage{
-			Symbol:    symbol,
-			Type:      securityType,
-			PricePrec: update.Security.PricePrecision,
-			QtyPrec:   update.Security.QtyPrecision,
-			IsActive:  update.IsActive}
-		if hasExchange {
-			exchange[update.Security.ID] = snapshot
+		} else if hasExchange {
+			exchange[update.Security.ID] = message
 		} else {
 			server.securities[update.Security.Exchange] =
-				map[string]securityUpdateMessage{update.Security.ID: snapshot}
+				map[string]securityUpdateMessage{update.Security.ID: message}
 		}
 
 	}
@@ -233,6 +243,7 @@ func (server *SecuritiesServer) broadcast(
 	for exchange, securities := range source {
 		message := amqp.Publishing{
 			ReplyTo: server.heartbeat.GetAddress(), ContentType: "application/json"}
+		server.sequenceNumber++
 		var err error
 		message.Body, err = json.Marshal(&securityUpdateListMessage{
 			SeqNum: server.sequenceNumber, Updates: securities})
@@ -247,7 +258,6 @@ func (server *SecuritiesServer) broadcast(
 				`Failed to publish security state list: "%s".`, err)
 			continue
 		}
-		server.sequenceNumber++
 	}
 }
 
@@ -280,19 +290,22 @@ func (server *SecuritiesServer) handleSnapshotRequest(
 		requestMessage.RoutingKey[:strings.Index(requestMessage.RoutingKey, ".")]
 	var response map[string]securityUpdateListMessage
 	if request == "*" {
+		response = map[string]securityUpdateListMessage{}
 		for exchange, securities := range server.securities {
 			response[exchange] = securityUpdateListMessage{
 				SeqNum:  server.sequenceNumber,
 				Updates: securities}
 		}
 	} else if snapshot, has := server.securities[request]; has {
-		response[request] = securityUpdateListMessage{
-			SeqNum:  server.sequenceNumber,
-			Updates: snapshot}
+		response = map[string]securityUpdateListMessage{
+			request: securityUpdateListMessage{
+				SeqNum:  server.sequenceNumber,
+				Updates: snapshot}}
 	} else {
-		response[request] = securityUpdateListMessage{
-			SeqNum:  server.sequenceNumber,
-			Updates: map[string]securityUpdateMessage{}}
+		response = map[string]securityUpdateListMessage{
+			request: securityUpdateListMessage{
+				SeqNum:  server.sequenceNumber,
+				Updates: map[string]securityUpdateMessage{}}}
 	}
 
 	responseMessage := amqp.Publishing{
@@ -306,15 +319,11 @@ func (server *SecuritiesServer) handleSnapshotRequest(
 		return
 	}
 	err = server.snapshotServer.mq.Publish(
-		requestMessage.ReplyTo, // key
-		false,                  // mandatory
-		false,                  // immediate
-		responseMessage)
+		requestMessage.ReplyTo, false, false, responseMessage)
 	if err != nil {
 		server.exchange.trekt.LogErrorf(
 			`Failed to publish security state list: "%s".`, err)
 	}
-	server.sequenceNumber++
 
 }
 
@@ -416,8 +425,9 @@ func createSecuritiesSubscription(
 		}{source: message.ReplyTo}
 		err := json.Unmarshal(message.Body, &snapshot.snapshot)
 		if err != nil {
-			result.trekt.LogErrorf(`Failed to parse security list snapshot: "%s".`,
-				err)
+			result.trekt.LogErrorf(
+				`Failed to parse security list snapshot: "%s". Message: "%s".`,
+				err, string(message.Body))
 		}
 		result.snapshotsChan <- snapshot
 	})
@@ -552,12 +562,16 @@ func (merger *securitiesUpdateMerger) merge(
 	exchange string,
 	updates securityUpdateListMessage,
 	source string,
-	hasPriority bool,
+	isSnapshot bool,
 	heartbeat MqHeartbeatClient) {
+
+	if updates.SeqNum == 1 {
+		isSnapshot = true
+	}
 
 	securities := merger.subscription.securities[exchange]
 	if securities == nil {
-		if updates.SeqNum != 0 {
+		if !isSnapshot {
 			return
 		}
 		securities = &struct {
@@ -569,7 +583,7 @@ func (merger *securitiesUpdateMerger) merge(
 			states: map[string]*SecurityState{}}
 		merger.subscription.securities[exchange] = securities
 		heartbeat.AddAddress(source)
-	} else if updates.SeqNum == 0 {
+	} else if isSnapshot {
 		if source != securities.source {
 			heartbeat.RemoveAddress(securities.source)
 			securities.source = source
@@ -586,7 +600,7 @@ func (merger *securitiesUpdateMerger) merge(
 	deactivated := 0
 	removed := 0
 
-	if updates.SeqNum == 0 {
+	if isSnapshot {
 		for id, security := range securities.states {
 			if _, has := updates.Updates[id]; !has {
 				merger.changed = append(merger.changed, SecurityState{
@@ -597,45 +611,41 @@ func (merger *securitiesUpdateMerger) merge(
 	}
 
 	for id, update := range updates.Updates {
-		security := securities.states[id]
-		isNew := false
-		if security == nil {
+		var security *tradinglib.Security
+		if update.IsActive != nil {
+			var err error
+			security, err = update.convertToSecurity(id, exchange)
+			if err != nil {
+				merger.subscription.trekt.LogErrorf(
+					`Failed to import security symbol: "%s".`, err)
+				continue
+			}
+		}
+
+		state := securities.states[id]
+		if state == nil {
 			if update.IsActive == nil {
 				continue
 			}
-			security = &SecurityState{}
-			securities.states[id] = security
-			isNew = true
+			state = &SecurityState{}
+			securities.states[id] = state
 			new++
 		}
 
-		symbol, err := tradinglib.ImportSymbol(update.Type, update.Symbol)
-		if err != nil {
-			merger.subscription.trekt.LogErrorf(
-				`Failed to import security symbol: "%s".`, err)
-			continue
-		}
-		if update.IsActive != nil {
-			security.Security = tradinglib.Security{
-				Symbol:         symbol,
-				ID:             id,
-				Exchange:       exchange,
-				PricePrecision: update.PricePrec,
-				QtyPrecision:   update.QtyPrec}
-			if !isNew && *update.IsActive != *security.IsActive {
-				if *update.IsActive {
-					activated++
-				} else {
-					deactivated++
-				}
+		if security != nil {
+			state.Security = *security
+			if *update.IsActive {
+				activated++
+			} else {
+				deactivated++
 			}
 		} else {
 			removed++
 			delete(securities.states, id)
 		}
-		security.IsActive = update.IsActive
+		state.IsActive = update.IsActive
 
-		merger.changed = append(merger.changed, *security)
+		merger.changed = append(merger.changed, *state)
 	}
 
 	securities.sequenceNumber = updates.SeqNum
@@ -658,7 +668,7 @@ func (subscription *SecuritiesSubscription) handleSecuritiesUpdate(
 		subscription: subscription,
 		changed:      []SecurityState{},
 		actionName:   "update"}
-	merger.merge(exchange, update, source, true, subscription.heartbeat)
+	merger.merge(exchange, update, source, false, subscription.heartbeat)
 	merger.notify()
 }
 
@@ -670,7 +680,7 @@ func (subscription *SecuritiesSubscription) handleSecuritiesSnapshot(
 		changed:      []SecurityState{},
 		actionName:   "snapshot"}
 	for exchange, update := range snapshot {
-		merger.merge(exchange, update, source, false, subscription.heartbeat)
+		merger.merge(exchange, update, source, true, subscription.heartbeat)
 	}
 	merger.notify()
 }
