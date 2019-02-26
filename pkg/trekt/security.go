@@ -256,8 +256,7 @@ func (server *SecuritiesServer) unregisterAll() {
 		return
 	}
 	server.exchange.trekt.LogInfof(
-		"Removing securities from %d exchanges"+
-			" due to the registration process is stopped...",
+		"Removing securities from %d exchanges due to the process is stopped...",
 		len(server.securities))
 	message := map[string]map[string]securityUpdateMessage{}
 	for exchangeID, securities := range server.securities {

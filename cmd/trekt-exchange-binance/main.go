@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rektra-network/trekt-go/pkg/trekt"
@@ -31,23 +32,27 @@ func main() {
 	defer exchange.Close()
 
 	exchangeInfoUpdatingStopChan := make(chan interface{})
-	go runExchangeInfoUpdating(
-		15*time.Minute, trekt, exchangeInfoUpdatingStopChan)
-	defer func() {
-		exchangeInfoUpdatingStopChan <- nil
-		close(exchangeInfoUpdatingStopChan)
+	defer close(exchangeInfoUpdatingStopChan)
+	exchangeInfoUpdatingStopWaiting := sync.WaitGroup{}
+	defer exchangeInfoUpdatingStopWaiting.Wait()
+	go func() {
+		exchangeInfoUpdatingStopWaiting.Add(1)
+		defer exchangeInfoUpdatingStopWaiting.Done()
+		runExchangeInfoUpdating(
+			15*time.Minute, trekt, exchangeInfoUpdatingStopChan)
 	}()
 
 	streamClientStopChan := make(chan interface{})
-	go runStreamClient(exchange, streamClientStopChan)
-	defer func() {
+	defer close(streamClientStopChan)
+	go func() {
+		interruptChan := make(chan os.Signal, 1)
+		defer close(interruptChan)
+		signal.Notify(interruptChan, os.Interrupt)
+		<-interruptChan
 		streamClientStopChan <- nil
-		close(streamClientStopChan)
+		exchangeInfoUpdatingStopChan <- nil
 	}()
 
-	interruptChan := make(chan os.Signal, 1)
-	defer close(interruptChan)
-	signal.Notify(interruptChan, os.Interrupt)
-	<-interruptChan
+	runStreamClient(exchange, streamClientStopChan)
 
 }
