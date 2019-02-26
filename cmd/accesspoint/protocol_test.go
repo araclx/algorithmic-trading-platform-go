@@ -5,7 +5,7 @@ package main_test
 import (
 	"testing"
 
-	ap "github.com/rektra-network/trekt-go/cmd/scrtr-accesspoint"
+	ap "github.com/rektra-network/trekt-go/cmd/accesspoint"
 	tl "github.com/rektra-network/trekt-go/pkg/tradinglib"
 	t "github.com/rektra-network/trekt-go/pkg/trekt"
 )

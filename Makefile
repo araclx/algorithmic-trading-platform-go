@@ -59,13 +59,13 @@ help: ## Show this help.
 
 
 build-accesspoint: ## Build access point node docker image from actual local sources.
-	@$(call build_docker_cmd_image,scrtr-accesspoint,$(IMAGE_TAG_ACCESSPOINT))
+	@$(call build_docker_cmd_image,accesspoint,$(IMAGE_TAG_ACCESSPOINT))
 
 build-auth: ## Build auth-node docker image from actual local sources.
-	@$(call build_docker_cmd_image,trekt-auth,$(IMAGE_TAG_AUTH))
+	@$(call build_docker_cmd_image,auth,$(IMAGE_TAG_AUTH))
 
 build-binance: ## Build Binance connector docker image from actual local sources.
-	@$(call build_docker_cmd_image,trekt-exchange-binance,$(IMAGE_TAG_EXCHANGE_BINANCE))
+	@$(call build_docker_cmd_image,exchange/binance,$(IMAGE_TAG_EXCHANGE_BINANCE))
 
 build: ## Build all docker images from actual local sources.
 	@$(call make_target,build-accesspoint)
