@@ -81,23 +81,10 @@ func Test_MqHeartbeatClient_Tests(test *testing.T) {
 		Do(func(...interface{}) { ticker.EXPECT().Stop() })
 
 	mq := mt.NewMockMqChannel(ctrl)
-	mqQueueName := "test client queue"
-	mq.EXPECT().QueueDelete(mqQueueName, false, false, false).Return(0, nil).
-		After(mq.EXPECT().QueueDeclare("", false, true, true, false, nil).
-			Return(amqp.Queue{Name: mqQueueName}, nil))
-	mq.EXPECT().QueueBind(mqQueueName, mqQueueName, false, nil).Return(nil)
-	requestsChan := make(chan amqp.Delivery)
-	mq.EXPECT().Consume(
-		mqQueueName, gomock.Any(), true, false, false, false, nil).
-		Do(
-			func(string, consumer string, autoAck,
-				exclusive, noLocal, noWait, args interface{}) {
 
-				mq.EXPECT().Cancel(consumer, false).
-					Do(func(...interface{}) { close(requestsChan) }).
-					Return(nil)
-			}).
-		Return(requestsChan, nil)
+	rpc := mt.NewMockRPCClient(ctrl)
+	rpc.EXPECT().Close().
+		After(mq.EXPECT().CreateRPCClient().Return(rpc, nil))
 
 	client, err := t.CreateMqHeartbeatClient(mq, trekt)
 	if err != nil || client == nil {
@@ -107,10 +94,6 @@ func Test_MqHeartbeatClient_Tests(test *testing.T) {
 
 	request := func(addressIndex int, isError bool) {
 		address := fmt.Sprintf("Test address #%d", addressIndex)
-		publishing := amqp.Publishing{
-			CorrelationId: "1234",
-			ReplyTo:       mqQueueName,
-			ContentType:   "application/json"}
 		var testErr error
 		if isError {
 			testErr = fmt.Errorf("Test error for address #%d", addressIndex)
@@ -118,22 +101,24 @@ func Test_MqHeartbeatClient_Tests(test *testing.T) {
 
 		waiting := sync.WaitGroup{}
 		waiting.Add(1)
-		mq.EXPECT().RegisterHandlers(publishing, gomock.Any(), gomock.Any()).
-			Do(func(
-				request amqp.Publishing,
-				handleResponse func(amqp.Delivery),
+		rpc.EXPECT().Request(address, true, nil, gomock.Any(), gomock.Any()).Do(
+			func(
+				address string,
+				mandatory bool,
+				request interface{},
+				handleResponse func([]byte),
 				handleError func(error)) {
 
-				mq.EXPECT().Publish(address, true, false, publishing).
-					Do(func(...interface{}) {
-						defer waiting.Done()
-						if testErr != nil {
-							go handleError(testErr)
-						} else {
-							go handleResponse(amqp.Delivery{ContentType: "application/json"})
-						}
-					})
+				go func() {
+					defer waiting.Done()
+					if testErr != nil {
+						handleError(testErr)
+					} else {
+						handleResponse([]byte{})
+					}
+				}()
 			})
+
 		client.AddAddress(address)
 		defer client.RemoveAddress(address)
 		ticksChan <- time.Time{}
@@ -156,5 +141,79 @@ func Test_MqHeartbeatClient_Tests(test *testing.T) {
 	request(1, true)
 	request(2, false)
 	request(3, true)
+
+}
+
+// Test_MqHeartbeatClient_Addresses tests heartbeat client work with addresses.
+func Test_MqHeartbeatClient_Addresses(test *testing.T) {
+	ctrl := gomock.NewController(test)
+	defer ctrl.Finish()
+
+	ticksChan := make(chan time.Time)
+	defer close(ticksChan)
+
+	ticker := mt.NewMockTicker(ctrl)
+	ticker.EXPECT().GetChan().AnyTimes().Return(ticksChan)
+
+	trekt := mt.NewMockTrekt(ctrl)
+	trekt.EXPECT().CreateTicker(gomock.Any()).Return(ticker).
+		Do(func(...interface{}) { ticker.EXPECT().Stop() })
+
+	mq := mt.NewMockMqChannel(ctrl)
+
+	rpc := mt.NewMockRPCClient(ctrl)
+	rpc.EXPECT().Close().
+		After(mq.EXPECT().CreateRPCClient().Return(rpc, nil))
+
+	client, err := t.CreateMqHeartbeatClient(mq, trekt)
+	if err != nil || client == nil {
+		test.Fatalf(`Failed to create client: "%s".`, err)
+	}
+	defer client.Close()
+
+	waiting := sync.WaitGroup{}
+	expect := func(address string) {
+		rpc.EXPECT().Request(address, true, nil, gomock.Any(), gomock.Any()).Do(
+			func(
+				address string,
+				mandatory bool,
+				request interface{},
+				handleResponse func([]byte),
+				handleError func(error)) {
+
+				go func() {
+					defer waiting.Done()
+					handleResponse([]byte{})
+				}()
+			})
+	}
+	{
+		expect("Test address #1")
+		expect("Test address #3")
+		expect("Test address #2")
+		waiting.Add(3)
+		client.AddAddress("Test address #3")
+		client.AddAddress("Test address #1")
+		client.AddAddress("Test address #2")
+		ticksChan <- time.Time{}
+		waiting.Wait()
+	}
+	{
+		waiting.Add(2)
+		client.RemoveAddress("Test address #2")
+		expect("Test address #1")
+		expect("Test address #3")
+		ticksChan <- time.Time{}
+		waiting.Wait()
+	}
+	{
+		waiting.Add(2)
+		client.ReplaceAddress(map[string]interface{}{
+			"Test address #4": nil, "Test address #5": nil})
+		expect("Test address #5")
+		expect("Test address #4")
+		ticksChan <- time.Time{}
+		waiting.Wait()
+	}
 
 }

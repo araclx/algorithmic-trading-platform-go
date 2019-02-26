@@ -80,7 +80,7 @@ type mqHeartbeatClient struct {
 func CreateMqHeartbeatClient(
 	mq MqChannel, trekt Trekt) (MqHeartbeatClient, error) {
 
-	rpc, err := createMqRPCClient(mq, trekt)
+	rpc, err := mq.CreateRPCClient()
 	if err != nil {
 		return nil, err
 	}
