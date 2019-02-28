@@ -58,7 +58,7 @@ func (connection *connection) sendSecurityList(
 						connection.securitiesSubscription.updatesChan =
 						connection.service.securities.CreateNotification()
 				}
-				connection.send(connection.protocol.securityList(securities))
+				connection.updateSecurities(securities)
 				return true
 			}
 		})

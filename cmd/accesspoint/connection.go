@@ -24,7 +24,7 @@ type connection struct {
 	securitiesSubscription struct {
 		id          trekt.SecuritiesSubscriptionNotificationID
 		updatesChan <-chan trekt.SecurityStateList
-		securities  map[string]*map[string]tradinglib.Security
+		securities  map[string]map[string]tradinglib.Security
 	}
 	depthOfMarketUpdatesChan chan trekt.DepthOfMarketUpdate
 
@@ -78,7 +78,7 @@ func (connection *connection) run() {
 		for {
 			_, data, err := connection.conn.ReadMessage()
 			if err != nil {
-				connection.logDebugf(`Failed to read data from the server: "%s".`, err)
+				connection.logDebugf(`Failed to read data from the client: "%s".`, err)
 				break
 			}
 			if len(data) == 0 {
@@ -124,7 +124,7 @@ func (connection *connection) run() {
 	}()
 
 	connection.securitiesSubscription.securities =
-		map[string]*map[string]tradinglib.Security{}
+		map[string]map[string]tradinglib.Security{}
 
 	connection.user = createUser(trekt.Auth{})
 	defer connection.user.close()
@@ -207,17 +207,17 @@ func (connection *connection) initUser(auth trekt.Auth) bool {
 func (connection *connection) updateSecurities(
 	update trekt.SecurityStateList) {
 
-	exchanges := map[string]*map[string]tradinglib.Security{}
+	exchanges := map[string]map[string]tradinglib.Security{}
 	for _, security := range update {
-		if security.IsActive != nil || !*security.IsActive {
+		if security.IsActive == nil || !*security.IsActive {
 			continue
 		}
 		securities, has := exchanges[security.Security.Exchange]
 		if !has {
-			newList := map[string]tradinglib.Security{}
-			securities = &newList
+			securities = map[string]tradinglib.Security{}
+			exchanges[security.Security.Exchange] = securities
 		}
-		(*securities)[security.Security.ID] = security.Security
+		securities[security.Security.ID] = security.Security
 	}
 	connection.securitiesSubscription.securities = exchanges
 	connection.send(connection.protocol.securityList(update))
@@ -227,7 +227,7 @@ func (connection *connection) resolveSecurity(
 	exchange, security string) *tradinglib.Security {
 
 	if list, has := connection.securitiesSubscription.securities[exchange]; has {
-		if item, has := (*list)[security]; has {
+		if item, has := list[security]; has {
 			return &item
 		}
 	}

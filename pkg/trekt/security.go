@@ -471,7 +471,7 @@ func (subscription *SecuritiesSubscription) Close() {
 }
 
 // CreateNotification creates a new channel to notify about securities updates
-// until CloseNotification will call for returned ID. Must be called only from
+// until CloseNotification call for returned ID.
 func (subscription *SecuritiesSubscription) CreateNotification() (
 	SecuritiesSubscriptionNotificationID, <-chan SecurityStateList) {
 
@@ -651,10 +651,10 @@ func (merger *securitiesUpdateMerger) merge(
 	securities.sequenceNumber = updates.SeqNum
 
 	merger.subscription.trekt.LogInfof(
-		`Received %d securities in %s with sequence number %d from "%s" (%s).`+
-			" Full list: %d, added: %d, removed: %d, activated: %d, deactivated: %d.",
+		`Received %d securities in %s with sequence number %d from "%s" (%s)`+
+			" added: %d, removed: %d. Full list: %d, active: %d, inactivate: %d.",
 		len(updates.Updates), merger.actionName, updates.SeqNum, exchange, source,
-		len(securities.states), new, removed, activated, deactivated)
+		new, removed, len(securities.states), activated, deactivated)
 }
 
 func (merger *securitiesUpdateMerger) notify() {

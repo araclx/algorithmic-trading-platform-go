@@ -129,11 +129,10 @@ func (updater *exchangeInfoUpdater) update() bool {
 	}
 
 	if len(updates) != 0 {
-		updater.trekt.LogDebugf(
-			"%d securities updated. Full list: %d, added: %d, removed: %d"+
-				", activated: %d, deactivated: %d.",
-			len(updates), len(updater.securities),
-			new, removed, activated, deactivated)
+		updater.trekt.LogDebugf("%d securities updated, added: %d, removed: %d."+
+			" Full list: %d, activate: %d, inactive: %d.",
+			len(updates), new, removed,
+			len(updater.securities), activated, deactivated)
 		updater.updatesChan <- updates
 	}
 
