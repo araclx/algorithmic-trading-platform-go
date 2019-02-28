@@ -35,7 +35,7 @@ type AuthExchange struct {
 func createAuthExchange(
 	trekt Trekt, mq *Mq, capacity uint16) (*AuthExchange, error) {
 
-	result := &AuthExchange{}
+	result := &AuthExchange{trekt: trekt}
 	err := result.mqChannel.init("auth", "direct", trekt, mq, capacity)
 	if err != nil {
 		return nil, err
