@@ -5,12 +5,16 @@ package main_test
 import (
 	"testing"
 
+	"github.com/golang/mock/gomock"
 	ap "github.com/rektra-network/trekt-go/cmd/accesspoint"
 	tl "github.com/rektra-network/trekt-go/pkg/tradinglib"
 	t "github.com/rektra-network/trekt-go/pkg/trekt"
 )
 
 func Test_Protocol_Dom(test *testing.T) {
+	ctrl := gomock.NewController(test)
+	defer ctrl.Finish()
+
 	protocol := ap.CreateProtocol()
 	{
 		export := protocol.DepthOfMarket(t.DepthOfMarketUpdate{}).Export()
