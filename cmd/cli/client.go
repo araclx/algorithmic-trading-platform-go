@@ -57,7 +57,13 @@ func (client *client) run() {
 			if *printMessages {
 				fmt.Println(
 					"== Access point message begin: =================================================")
-				fmt.Println(string(data))
+				dataString := string(data)
+				maxLen := 255
+				if len(dataString) > maxLen {
+					fmt.Printf("%s...(%d bytes)\n", dataString[:maxLen], len(dataString))
+				} else {
+					fmt.Println(dataString)
+				}
 				fmt.Println(
 					"== Access point message end. ===================================================")
 			}
@@ -111,6 +117,9 @@ func (client *client) handleServerTopic(topic string, data interface{}) {
 
 func (client *client) handleSecurityList(data interface{}) {
 
+	numberOfActiveSecurities := 0
+	numberOfDeletedSecurities := 0
+
 	exchanges, isOk := data.(map[string]interface{})
 	if !isOk {
 		log.Printf(`Failed to parse security list: "%s".`, data)
@@ -123,21 +132,23 @@ func (client *client) handleSecurityList(data interface{}) {
 			log.Printf(`Failed to parse security: "%s".`, securities)
 			return
 		}
-
 		for id, securityInterface := range security {
+			if securityInterface == nil {
+				numberOfDeletedSecurities++
+				continue
+			}
 			securityData, isOk :=
 				securityInterface.(map[string]interface{})
 			if !isOk {
 				log.Printf(`Failed to parse security data: "%s".`, securities)
 				return
 			}
-
 			symbol, isOk := securityData["name"].(string)
 			if !isOk {
 				log.Printf(`Failed to parse security name: "%s".`, securities)
 				return
 			}
-
+			numberOfActiveSecurities++
 			if symbol == "BTC/USDT" {
 				log.Printf(
 					`Requesting "%s" depth of market start...`, symbol)
@@ -145,7 +156,11 @@ func (client *client) handleSecurityList(data interface{}) {
 					exchange,
 					id)
 			}
-
 		}
+	}
+
+	log.Printf("%d security(ies) is active.", numberOfActiveSecurities)
+	if numberOfDeletedSecurities != 0 {
+		log.Printf("%d security(ies) removed.", numberOfDeletedSecurities)
 	}
 }
