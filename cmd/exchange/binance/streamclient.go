@@ -3,6 +3,7 @@
 package main
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -41,17 +42,54 @@ func runStreamClient(
 		}
 	}
 
+	clientStopsChan := make(chan interface{})
+	defer close(clientStopsChan)
+
+	var client *streamClient
+	closeClient := func() {
+		if client != nil {
+			clientCopy := client
+			client = nil
+			clientCopy.close()
+		}
+	}
+	defer closeClient()
+
+	var lastConnectTime time.Time
+	reconnect := func() {
+		closeClient()
+		if len(subscription) == 0 {
+			return
+		}
+		numberOfFailedConnections := 0
+		for client == nil {
+			var isNotStopped bool
+			client, isNotStopped = createStreamClientOrWait(
+				subscription, server, exchange.GetTrekt(),
+				&numberOfFailedConnections, lastConnectTime, stopChan)
+			if !isNotStopped {
+				return
+			}
+		}
+		lastConnectTime = time.Now()
+		go func() {
+			defer func() {
+				if client != nil {
+					clientStopsChan <- nil
+				}
+			}()
+			client.run()
+		}()
+	}
+
 	for {
 		select {
-
 		case request := <-requestsChan:
 			updateSubscription(request)
-
 			ticker := time.NewTicker(5 * time.Second)
-
-			// It has to wait for some time if other requests will be sent
-			// immediately after this to don't make too many requests when one client
-			// subscribes many securities subsequently:
+			// It has to wait for some time if other requests will be sent immediately
+			// after this to don't make too many requests when one client  subscribes
+			// many securities subsequently:
 		requestsThinningLoop:
 			for {
 				select {
@@ -64,75 +102,51 @@ func runStreamClient(
 					return
 				}
 			}
-
-			{
-				securities := make([]string, len(subscription))
-				{
-					i := 0
-					for security := range subscription {
-						securities[i] = security
-						i++
-					}
-				}
-				numberOfFailedConnections := 0
-				for {
-					client, isNotStopped := createStreamClientOrWait(
-						securities, server, exchange.GetTrekt(),
-						&numberOfFailedConnections, stopChan)
-					if !isNotStopped {
-						return
-					}
-					if client == nil {
-						continue
-					}
-					defer client.close()
-					isNotStopped = client.run(stopChan)
-					if !isNotStopped {
-						return
-					}
-				}
-			}
-
+			reconnect()
+		case <-clientStopsChan:
+			reconnect()
 		case <-stopChan:
 			return
-
 		}
 	}
 }
 
 type streamClient struct {
-	server *trekt.MarketDataServer
-	trekt  trekt.Trekt
-	conn   *websocket.Conn
+	server      *trekt.MarketDataServer
+	trekt       trekt.Trekt
+	conn        *websocket.Conn
+	stopWaiting sync.WaitGroup
 }
 
 func createStreamClientOrWait(
-	securities []string,
+	subscription map[string]interface{},
 	server *trekt.MarketDataServer,
 	trekt trekt.Trekt,
 	numberOfFailedConnections *int,
+	lastConnectTime time.Time,
 	stopChan <-chan interface{}) (*streamClient, bool) {
 
-	result, err := createStreamClient(securities, server, trekt)
-	if err == nil {
-		trekt.LogInfof("Connected to the stream access point (%d).",
-			*numberOfFailedConnections)
-		*numberOfFailedConnections = 0
-		return result, true
+	liveTime := time.Now().Sub(lastConnectTime)
+	if liveTime > 15*time.Second {
+		result, err := createStreamClient(subscription, server, trekt)
+		if err == nil {
+			trekt.LogInfof(
+				"Connected to the stream (number of failed attempts: %d).",
+				*numberOfFailedConnections)
+			*numberOfFailedConnections = 0
+			return result, true
+		}
+		(*numberOfFailedConnections)++
+		trekt.LogErrorf(`Failed to connect the stream: "%s" (%d).`,
+			err, *numberOfFailedConnections)
 	}
-
-	(*numberOfFailedConnections)++
-
-	trekt.LogErrorf(
-		`Failed to connect the stream access point: "%s" (%d).`,
-		err, *numberOfFailedConnections)
 
 	sleepTime := 5 * time.Second
 	if *numberOfFailedConnections > 30 {
 		sleepTime = 180 * time.Second
-	} else if *numberOfFailedConnections > 15 {
+	} else if *numberOfFailedConnections > 15 || liveTime < 5*time.Second {
 		sleepTime = 60 * time.Second
-	} else if *numberOfFailedConnections > 5 {
+	} else if *numberOfFailedConnections > 5 || liveTime < 15*time.Second {
 		sleepTime = 15 * time.Second
 	}
 
@@ -147,17 +161,23 @@ func createStreamClientOrWait(
 }
 
 func createStreamClient(
-	securities []string,
+	subscription map[string]interface{},
 	server *trekt.MarketDataServer,
 	trekt trekt.Trekt) (*streamClient, error) {
 
 	url := "wss://stream.binance.com:9443/stream?streams="
-	for i, security := range securities {
-		if i != 0 {
-			url += "/"
+	{
+		isStart := true
+		for symbol := range subscription {
+			if isStart {
+				isStart = false
+			} else {
+				url += "/"
+			}
+			url += symbol + "@depth5"
 		}
-		url += security + "@depth5"
 	}
+	trekt.LogDebugf(`Connecting to the stream "%s"...`, url)
 
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
@@ -174,39 +194,25 @@ func createStreamClient(
 
 func (client *streamClient) close() {
 	client.conn.Close()
+	client.stopWaiting.Wait()
 	client.trekt.LogInfo("Connection closed.")
 }
 
-func (client *streamClient) run(stopChan <-chan interface{}) bool {
-
-	readChan := make(chan []byte, 1)
-	go func() {
-		defer close(readChan)
-		for {
-			_, data, err := client.conn.ReadMessage()
-			if err != nil {
-				client.trekt.LogDebugf(`Failed to read data from the server: "%s".`,
-					err)
-				return
-			}
-			if len(data) == 0 {
-				client.trekt.LogDebugf("EOF is received from the connection.")
-				return
-			}
-			readChan <- data
-		}
-	}()
-
+func (client *streamClient) run() {
+	client.stopWaiting.Add(1)
+	defer client.stopWaiting.Done()
 	for {
-		select {
-		case data, isOpened := <-readChan:
-			if !isOpened {
-				return true
-			}
-			client.handleMessages(data)
-		case <-stopChan:
-			return false
+		_, data, err := client.conn.ReadMessage()
+		if err != nil {
+			client.trekt.LogDebugf(`Failed to read data from the server: "%s".`,
+				err)
+			return
 		}
+		if len(data) == 0 {
+			client.trekt.LogDebugf("EOF is received from the connection.")
+			return
+		}
+		client.handleMessages(data)
 	}
 }
 

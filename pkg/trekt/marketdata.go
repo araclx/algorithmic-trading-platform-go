@@ -414,8 +414,8 @@ func (subscription *marketDataStreamSubscription) start(
 		return err
 	}
 
-	updatesChanCloseWaiting.Add(1)
 	go func() {
+		updatesChanCloseWaiting.Add(1)
 		defer updatesChanCloseWaiting.Done()
 		for {
 			message, isOpened := <-subscription.subscription.Messages()

@@ -88,7 +88,7 @@ func (connection *connection) startDepthOfMarket(
 			}
 			subscription, err := connection.service.marketData.StartDepthOfMarket(
 				*security, connection.depthOfMarketUpdatesChan)
-			connection.logDebugf(`Requesting depth of market for  "%s" on "%s"...`,
+			connection.logDebugf(`Requesting depth of market for "%s" on "%s"...`,
 				security.ID, security.Exchange)
 			if err != nil {
 				connection.logErrorf(
